@@ -1,8 +1,4 @@
-// AI単眼深度推定(Depth Anything V2 small)。
-// 合成フレームから深度マップをリアルタイム生成し、レリーフ表示に使う。
-// モデルはHugging Face Hubから初回のみダウンロードされる(ROMは送信しない。
-// 送るのは画像でもなく、モデルの取得のみ)。推論は完全にローカルで実行される。
-// このモジュールはmain側から動的importされ、バンドル本体を肥大化させない。
+// PPUレイヤー単位のAI単眼深度推定。
 
 import {
   env,
@@ -10,34 +6,37 @@ import {
   RawImage,
   type DepthEstimationPipeline,
 } from "@huggingface/transformers";
-import { VISIBLE_H, VISIBLE_W } from "../emulator/core";
+import { VISIBLE_H, VISIBLE_W, type LayerFrames } from "../emulator/core";
 
 const MODEL_ID = "onnx-community/depth-anything-v2-small";
 
-// 推論入力サイズ(14の倍数)。小さいほど速く、ドット絵なら十分
-const INFER_SIZE = 252;
-
-// 時間方向の平滑化係数(大きいほど追従が速く、ちらつきやすい)
-const SMOOTHING = 0.35;
-
+export const DEPTH_LAYER_NAMES = ["behind", "bg", "front"] as const;
+export type DepthLayerName = (typeof DEPTH_LAYER_NAMES)[number];
 export type ProgressCallback = (message: string) => void;
+
+type LayerState = {
+  depth: Float32Array<ArrayBuffer>;
+  version: number;
+};
 
 export class DepthEstimator {
   private pipe: DepthEstimationPipeline | null = null;
   private busy = false;
+  private nextLayer = 0;
+  private inferSize = 252;
 
-  /** WebGPUで実行できているか(falseはWASMフォールバック=低速) */
+  smoothing = 0.35;
   usingWebGPU = false;
 
-  /** 平滑化済み深度マップ(0..1、240×224、行は上→下、1=手前) */
-  readonly depth = new Float32Array(VISIBLE_W * VISIBLE_H);
-
-  /** 結果が更新されるたびに増えるカウンタ(取り込み判定用) */
-  version = 0;
+  readonly layers: Record<DepthLayerName, LayerState> = {
+    behind: { depth: new Float32Array(VISIBLE_W * VISIBLE_H), version: 0 },
+    bg: { depth: new Float32Array(VISIBLE_W * VISIBLE_H), version: 0 },
+    front: { depth: new Float32Array(VISIBLE_W * VISIBLE_H), version: 0 },
+  };
 
   async init(onProgress: ProgressCallback): Promise<void> {
     env.allowLocalModels = false;
-
+    env.useBrowserCache = true;
     const progress_callback = (p: {
       status: string;
       file?: string;
@@ -63,8 +62,7 @@ export class DepthEstimator {
       });
     } catch (e) {
       if (!this.usingWebGPU) throw e;
-      // WebGPUの初期化に失敗した環境ではWASMで再試行
-      console.warn("WebGPUでの初期化に失敗、WASMで再試行します:", e);
+      console.warn("WebGPU initialization failed; retrying with WASM.", e);
       this.usingWebGPU = false;
       this.pipe = await pipeline("depth-estimation", MODEL_ID, {
         device: "wasm",
@@ -72,51 +70,84 @@ export class DepthEstimator {
         progress_callback,
       });
     }
+    this.applyInferSize();
+  }
 
-    // 入力を縮小して高速化(既定の518pxはNESのドット絵には過剰)
+  setInferSize(px: number): void {
+    this.inferSize = px;
+    this.applyInferSize();
+  }
+
+  private applyInferSize(): void {
     const proc = this.pipe as unknown as {
       processor?: {
         feature_extractor?: { size?: { width: number; height: number } };
       };
-    };
-    if (proc.processor?.feature_extractor?.size) {
+    } | null;
+    if (proc?.processor?.feature_extractor?.size) {
       proc.processor.feature_extractor.size = {
-        width: INFER_SIZE,
-        height: INFER_SIZE,
+        width: this.inferSize,
+        height: this.inferSize,
       };
     }
   }
 
   /**
-   * 1フレーム分のRGBA(240×224、行は上→下)を推論に回す。
-   * 前回の推論が終わっていなければ何もしない(フレームスキップ)。
+   * 背面スプライト、背景、前面スプライトを順番に1層ずつ推論する。
+   * 透明部分は背景色で埋め、出力時にマスクして他層の形状混入を防ぐ。
    */
-  submit(rgba: Uint8Array): void {
+  submit(frames: LayerFrames): void {
     if (!this.pipe || this.busy) return;
+    const name = DEPTH_LAYER_NAMES[this.nextLayer];
+    this.nextLayer = (this.nextLayer + 1) % DEPTH_LAYER_NAMES.length;
+    const source =
+      name === "behind"
+        ? frames.sprBehind
+        : name === "front"
+          ? frames.sprFront
+          : frames.bg;
+    const input = new Uint8Array(VISIBLE_W * VISIBLE_H * 4);
+    const mask = new Uint8Array(VISIBLE_W * VISIBLE_H);
+    const backdrop = frames.backdrop.map((v) => Math.round(v * 255));
+
+    for (let y = 0; y < VISIBLE_H; y++) {
+      const sourceRow = (VISIBLE_H - 1 - y) * VISIBLE_W * 4;
+      const targetRow = y * VISIBLE_W * 4;
+      for (let x = 0; x < VISIBLE_W; x++) {
+        const so = sourceRow + x * 4;
+        const to = targetRow + x * 4;
+        const opaque = source[so + 3] >= 128;
+        mask[y * VISIBLE_W + x] = opaque ? 1 : 0;
+        input[to] = opaque ? source[so] : backdrop[0];
+        input[to + 1] = opaque ? source[so + 1] : backdrop[1];
+        input[to + 2] = opaque ? source[so + 2] : backdrop[2];
+        input[to + 3] = 255;
+      }
+    }
+
     this.busy = true;
-    // 推論は非同期なのでバッファをコピーして渡す
-    const img = new RawImage(rgba.slice(), VISIBLE_W, VISIBLE_H, 4);
+    const img = new RawImage(input, VISIBLE_W, VISIBLE_H, 4);
     Promise.resolve(this.pipe(img))
       .then((out) => {
         const result = Array.isArray(out) ? out[0] : out;
-        const d = result.depth; // RawImage(1ch, 0-255に正規化済み)
-        const data = d.data as Uint8Array | Uint8ClampedArray;
-        const w = d.width;
-        const h = d.height;
-        // 入力サイズと違う場合は最近傍でリサンプリングしつつEMAで平滑化
+        const data = result.depth.data as Uint8Array | Uint8ClampedArray;
+        const w = result.depth.width;
+        const h = result.depth.height;
+        const state = this.layers[name];
         for (let y = 0; y < VISIBLE_H; y++) {
           const sy = h === VISIBLE_H ? y : ((y * h) / VISIBLE_H) | 0;
           for (let x = 0; x < VISIBLE_W; x++) {
-            const sx = w === VISIBLE_W ? x : ((x * w) / VISIBLE_W) | 0;
-            const v = data[sy * w + sx] / 255;
             const i = y * VISIBLE_W + x;
-            this.depth[i] += (v - this.depth[i]) * SMOOTHING;
+            const sx = w === VISIBLE_W ? x : ((x * w) / VISIBLE_W) | 0;
+            const value = mask[i] ? data[sy * w + sx] / 255 : 0;
+            state.depth[i] +=
+              (value - state.depth[i]) * this.smoothing;
           }
         }
-        this.version++;
+        state.version++;
       })
       .catch((e) => {
-        console.warn("深度推定に失敗しました:", e);
+        console.warn(`Depth estimation failed for layer ${name}.`, e);
       })
       .finally(() => {
         this.busy = false;

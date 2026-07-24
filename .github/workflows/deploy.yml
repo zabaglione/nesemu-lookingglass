@@ -1,10 +1,8 @@
 name: Deploy to GitHub Pages
 
-# 公開判断が出るまでは手動実行のみ(公開時にpushトリガーを戻す):
-# on:
-#   push:
-#     branches: [main]
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
