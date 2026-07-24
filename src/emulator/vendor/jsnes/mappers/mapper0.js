@@ -34,6 +34,7 @@ class Mapper0 {
     // ExRAM mode 1). When true, the PPU calls getBgTileData() for each
     // background tile during rendering.
     this.bgTileOverride = false;
+    this.cpuClockedIrq = false;
   }
 
   write(address, value) {
@@ -566,6 +567,10 @@ class Mapper0 {
   clockIrqCounter() {
     // Does nothing. This is used by the MMC3 mapper.
   }
+
+  // Called once for each elapsed CPU cycle. Used by CPU-clocked mapper IRQs.
+  // eslint-disable-next-line no-unused-vars
+  clockCpuCycles(cycles) {}
 
   // eslint-disable-next-line no-unused-vars
   latchAccess(address) {

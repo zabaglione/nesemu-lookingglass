@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import type { DepthLayerName } from "../depth/estimator";
-import { VISIBLE_H, VISIBLE_W, type LayerFrames } from "../emulator/core";
+import {
+  VISIBLE_H,
+  VISIBLE_W,
+  type LayerFrames,
+  type SpritePriority,
+} from "../emulator/core";
 
 const RELIEF_SEGMENTS_X = 120;
 const RELIEF_SEGMENTS_Y = 112;
@@ -18,6 +23,13 @@ type DepthLayer = {
   mesh: THREE.Mesh;
 };
 
+type SpriteLayer = {
+  texture: THREE.DataTexture;
+  mesh: THREE.Mesh;
+  priority: SpritePriority;
+  depth: number;
+};
+
 /**
  * 通常モードではPPU層を平面として、AI深度モードでは各PPU層を
  * 独立したレリーフとして奥行き方向へ配置する。
@@ -30,12 +42,15 @@ export class Stage {
   private readonly bgTex: THREE.DataTexture;
   private readonly behindTex: THREE.DataTexture;
   private readonly frontTex: THREE.DataTexture;
-  private readonly planes: THREE.Mesh[] = [];
+  private readonly layerBackdrop: THREE.Mesh;
+  private readonly layerBackground: THREE.Mesh;
+  private readonly spriteLayers: SpriteLayer[];
   private readonly layersGroup = new THREE.Group();
   private readonly depthGroup = new THREE.Group();
   private readonly depthBackdrop: THREE.Mesh;
   private readonly depthLayers: Record<DepthLayerName, DepthLayer>;
   private gap = 0.1;
+  private spriteDepthSpread = 0.8;
   private mode: DisplayMode = "layers";
 
   constructor(frames: LayerFrames, compositeTexData: Uint8Array<ArrayBuffer>) {
@@ -49,15 +64,30 @@ export class Stage {
       color: 0x000000,
       side: THREE.DoubleSide,
     });
-    const backdrop = new THREE.Mesh(geo, this.backdropMat);
+    this.layerBackdrop = new THREE.Mesh(geo, this.backdropMat);
     this.behindTex = this.makeTexture(frames.sprBehind);
     this.bgTex = this.makeTexture(frames.bg);
     this.frontTex = this.makeTexture(frames.sprFront);
-    const behind = new THREE.Mesh(geo, this.makeLayerMaterial(this.behindTex));
-    const bg = new THREE.Mesh(geo, this.makeLayerMaterial(this.bgTex));
-    const front = new THREE.Mesh(geo, this.makeLayerMaterial(this.frontTex));
-    this.planes = [backdrop, behind, bg, front];
-    this.layersGroup.add(...this.planes);
+    this.layerBackground = new THREE.Mesh(
+      geo,
+      this.makeLayerMaterial(this.bgTex),
+    );
+    this.spriteLayers = frames.spriteGroups.map((group) => {
+      const texture = this.makeTexture(group.rgba);
+      const mesh = new THREE.Mesh(geo, this.makeLayerMaterial(texture));
+      mesh.visible = group.visible;
+      return {
+        texture,
+        mesh,
+        priority: group.priority,
+        depth: group.depth,
+      };
+    });
+    this.layersGroup.add(
+      this.layerBackdrop,
+      this.layerBackground,
+      ...this.spriteLayers.map((layer) => layer.mesh),
+    );
 
     this.depthBackdrop = new THREE.Mesh(geo, this.backdropMat);
     this.depthLayers = {
@@ -128,23 +158,41 @@ export class Stage {
     this.applyGap();
   }
 
+  /** 同じ前後優先度内にあるスプライトグループ同士のZ差。 */
+  setSpriteDepthSpread(spread: number): void {
+    this.spriteDepthSpread = Math.max(0, Math.min(1.5, spread));
+    this.applyGap();
+  }
+
   commitFrame(frames: LayerFrames): void {
     this.bgTex.needsUpdate = true;
     this.behindTex.needsUpdate = true;
     this.frontTex.needsUpdate = true;
+    this.spriteLayers.forEach((layer, i) => {
+      const frame = frames.spriteGroups[i];
+      // 非表示グループはGPUへ転送しない。再表示時には必ず更新される。
+      if (frame.visible) layer.texture.needsUpdate = true;
+      layer.mesh.visible = frame.visible;
+      layer.priority = frame.priority;
+      layer.depth = frame.depth;
+    });
     this.backdropMat.color.setRGB(...frames.backdrop, THREE.SRGBColorSpace);
+    this.applyGap();
   }
 
   private applyGap(): void {
     const g = Math.max(this.gap, MIN_GAP);
-    const offsets = [-1.5, -0.5, 0.5, 1.5];
-    this.planes.forEach((plane, i) => {
-      plane.position.z = offsets[i] * g;
+    this.layerBackdrop.position.z = -1.5 * g;
+    this.layerBackground.position.z = 0.5 * g;
+    this.spriteLayers.forEach((layer) => {
+      const base = layer.priority === "behind" ? -0.5 : 1.5;
+      const groupOffset = (layer.depth - 0.5) * this.spriteDepthSpread;
+      layer.mesh.position.z = (base + groupOffset) * g;
     });
-    this.depthBackdrop.position.z = offsets[0] * g;
-    this.depthLayers.behind.mesh.position.z = offsets[1] * g;
-    this.depthLayers.bg.mesh.position.z = offsets[2] * g;
-    this.depthLayers.front.mesh.position.z = offsets[3] * g;
+    this.depthBackdrop.position.z = -1.5 * g;
+    this.depthLayers.behind.mesh.position.z = -0.5 * g;
+    this.depthLayers.bg.mesh.position.z = 0.5 * g;
+    this.depthLayers.front.mesh.position.z = 1.5 * g;
   }
 
   private makeTexture(data: Uint8Array<ArrayBuffer>): THREE.DataTexture {

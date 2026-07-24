@@ -115,6 +115,10 @@ class PPU {
     // stereoscopic layer rendering. Pixels not drawn hold LAYER_NONE.
     this.sprBehindBuffer = new Uint32Array(256 * 240);
     this.sprFrontBuffer = new Uint32Array(256 * 240);
+    this.sprBehindOwnerBuffer = new Uint8Array(256 * 240);
+    this.sprFrontOwnerBuffer = new Uint8Array(256 * 240);
+    this.sprBehindOwnerBuffer.fill(0xff);
+    this.sprFrontOwnerBuffer.fill(0xff);
     this.layerBackdropColor = 0;
 
     this.validTileData = null;
@@ -163,6 +167,8 @@ class PPU {
     // Storage layout: 240 scanlines × up to 8 sprites × 4 bytes = flat arrays.
     this.scanlineSpriteCount = new Uint8Array(241); // +1 for buffer
     this.scanlineSecondaryOAM = new Uint8Array(241 * 32);
+    this.scanlineSpriteIndex = new Uint8Array(241 * 8);
+    this.scanlineSpriteIndex.fill(0xff);
     this.scanlineSprite0 = new Uint8Array(241); // 1 if sprite 0 present
 
     // Palette data:
@@ -361,6 +367,9 @@ class PPU {
   // Sets this.frameEnded = true when VBlank fires (scanline 0, dot 1),
   // signaling the frame loop to break after the current instruction.
   advanceDots(dots) {
+    if (this.nes.mmap.cpuClockedIrq) {
+      this.nes.mmap.clockCpuCycles(dots / 3);
+    }
     let finalCurX = this.curX + dots;
 
     // Fast path: skip dot-by-dot when no per-dot events can fire.
@@ -687,6 +696,9 @@ class PPU {
     this.layerBackdropColor = bgColor;
     this.sprBehindBuffer.fill(LAYER_NONE);
     this.sprFrontBuffer.fill(LAYER_NONE);
+    this.sprBehindOwnerBuffer.fill(0xff);
+    this.sprFrontOwnerBuffer.fill(0xff);
+    this.scanlineSpriteIndex.fill(0xff);
   }
 
   endFrame() {
@@ -1635,6 +1647,7 @@ class PPU {
             this.scanlineSecondaryOAM[oamBase + secondaryIndex + b] =
               this.spriteMem[(n * 4 + m + b) & 0xff];
           }
+          this.scanlineSpriteIndex[targetScanline * 8 + spritesFound] = n;
           // The first sprite in evaluation order (at OAMADDR/4) is the one
           // that triggers sprite 0 hit, regardless of its OAM index.
           // On real hardware, setting OAMADDR to a non-zero value causes
@@ -1708,6 +1721,8 @@ class PPU {
     // [nesemu-lookingglass modification] Sprite pixels are mirrored into the
     // layer buffer that matches their priority (bgPri 1 = behind background).
     let layerBuffer = bgPri === 1 ? this.sprBehindBuffer : this.sprFrontBuffer;
+    let ownerBuffer =
+      bgPri === 1 ? this.sprBehindOwnerBuffer : this.sprFrontOwnerBuffer;
 
     for (let scan = startscan; scan < startscan + scancount; scan++) {
       if (scan < 0 || scan >= 240) continue;
@@ -1720,6 +1735,7 @@ class PPU {
         let sprTile = this.scanlineSecondaryOAM[oamBase + i * 4 + 1];
         let sprAttr = this.scanlineSecondaryOAM[oamBase + i * 4 + 2];
         let sprX = this.scanlineSecondaryOAM[oamBase + i * 4 + 3];
+        let ownerId = this.scanlineSpriteIndex[scan * 8 + i];
 
         let vertFlip = (sprAttr >> 7) & 1;
         let horiFlip = (sprAttr >> 6) & 1;
@@ -1752,6 +1768,8 @@ class PPU {
             i, // priority: lower index in secondary OAM = higher priority
             pixrendered,
             layerBuffer, // [nesemu-lookingglass modification]
+            ownerBuffer,
+            ownerId,
           );
 
           // Mapper latch: simulate PPU's sprite pattern table fetch.
@@ -1792,6 +1810,8 @@ class PPU {
             i,
             pixrendered,
             layerBuffer, // [nesemu-lookingglass modification]
+            ownerBuffer,
+            ownerId,
           );
 
           // Mapper latch: simulate fetches for both halves of 8x16 sprite.

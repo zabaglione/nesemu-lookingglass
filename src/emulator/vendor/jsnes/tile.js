@@ -1,9 +1,9 @@
 /*
  * NOTICE OF MODIFICATION (Apache License 2.0, Section 4b):
  * This file was modified for the nesemu-lookingglass project (2026).
- * render() accepts an optional extra `layerBuffer`; every pixel written to
- * the composite buffer is mirrored into it so sprites can be extracted as a
- * separate depth layer. Priority/emulation logic is unchanged.
+ * render() accepts optional layer and owner buffers; every sprite pixel
+ * written to the composite buffer is mirrored into them for 3D separation.
+ * Priority/emulation logic is unchanged.
  * Original: jsnes v2.1.0 <https://github.com/bfirsh/jsnes>, Apache-2.0.
  */
 class Tile {
@@ -48,6 +48,8 @@ class Tile {
     pri,
     priTable,
     layerBuffer, // [nesemu-lookingglass modification] optional layer output
+    ownerBuffer, // [nesemu-lookingglass modification] optional OAM owner output
+    ownerId,
   ) {
     if (dx < -7 || dx >= 256 || dy < -7 || dy >= 240) {
       return;
@@ -82,6 +84,7 @@ class Tile {
               if (layerBuffer !== undefined) {
                 // [nesemu-lookingglass modification] mirror into layer output
                 layerBuffer[fbIndex] = palette[palIndex + palAdd];
+                ownerBuffer[fbIndex] = ownerId;
               }
               tpri = (tpri & 0xf00) | pri;
               priTable[fbIndex] = tpri;
@@ -106,6 +109,7 @@ class Tile {
               if (layerBuffer !== undefined) {
                 // [nesemu-lookingglass modification] mirror into layer output
                 layerBuffer[fbIndex] = palette[palIndex + palAdd];
+                ownerBuffer[fbIndex] = ownerId;
               }
               tpri = (tpri & 0xf00) | pri;
               priTable[fbIndex] = tpri;
@@ -131,6 +135,7 @@ class Tile {
               if (layerBuffer !== undefined) {
                 // [nesemu-lookingglass modification] mirror into layer output
                 layerBuffer[fbIndex] = palette[palIndex + palAdd];
+                ownerBuffer[fbIndex] = ownerId;
               }
               tpri = (tpri & 0xf00) | pri;
               priTable[fbIndex] = tpri;
@@ -156,6 +161,7 @@ class Tile {
               if (layerBuffer !== undefined) {
                 // [nesemu-lookingglass modification] mirror into layer output
                 layerBuffer[fbIndex] = palette[palIndex + palAdd];
+                ownerBuffer[fbIndex] = ownerId;
               }
               tpri = (tpri & 0xf00) | pri;
               priTable[fbIndex] = tpri;

@@ -8,6 +8,9 @@ export interface PanelCallbacks {
   onEnterLookingGlass(): void;
   onDisplayMode(mode: DisplayMode): void;
   onLayerGap(value: number): void;
+  onSpriteGroupMargin(value: number): void;
+  onSpriteGroupLimit(value: number): void;
+  onSpriteDepthSpread(value: number): void;
   onDepthScale(value: number): void;
   onDepthInferSize(px: number): void;
   onDepthSmoothing(value: number): void;
@@ -27,9 +30,12 @@ export class Panel {
   private padEl!: HTMLElement;
   private fpsEl!: HTMLElement;
   private pauseBtn!: HTMLButtonElement;
+  private romMessageEl!: HTMLElement;
   private messageEl!: HTMLElement;
   private lkgBtn!: HTMLButtonElement;
   private dispModeSel!: HTMLSelectElement;
+  private spriteGroupsEl!: HTMLElement;
+  private lastSpriteGroupCount: number | null = null;
 
   constructor(container: HTMLElement, cb: PanelCallbacks) {
     this.rootEl = document.createElement("div");
@@ -49,6 +55,7 @@ export class Panel {
             <button class="btn" data-id="demo">内蔵デモ</button>
           </div>
           <input type="file" accept=".nes" data-id="file" hidden />
+          <div class="message rom-message" data-id="rom-message" aria-live="polite"></div>
           <div class="status-line">ROM: <b data-id="rom-name">未読み込み</b></div>
           <div class="status-line">マッパー: <b data-id="mapper">-</b></div>
           <div class="status-line" data-id="pad-line">パッド: <b data-id="pad">未接続(キーボード可)</b></div>
@@ -64,10 +71,32 @@ export class Panel {
               <option value="depth">レイヤー別AI深度(実験的)</option>
             </select>
           </div>
-          <div class="slider-row" data-id="row-gap">
-            <label for="gap">層間距離</label>
-            <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.04" />
-            <output data-id="gap-out">0.04</output>
+          <div data-id="layer-rows">
+            <div class="slider-row">
+              <label for="gap">層間距離</label>
+              <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.04" />
+              <output data-id="gap-out">0.04</output>
+            </div>
+            <div class="slider-row">
+              <label for="spr-margin">結合距離</label>
+              <input id="spr-margin" type="range" min="0" max="16" step="1" value="4" />
+              <output data-id="spr-margin-out">4px</output>
+            </div>
+            <div class="slider-row">
+              <label for="spr-limit">最大グループ</label>
+              <select id="spr-limit">
+                <option value="2">2(前後のみ)</option>
+                <option value="4">4</option>
+                <option value="6">6</option>
+                <option value="8" selected>8(標準)</option>
+              </select>
+            </div>
+            <div class="slider-row">
+              <label for="spr-depth">個別奥行き</label>
+              <input id="spr-depth" type="range" min="0" max="1.5" step="0.1" value="0.8" />
+              <output data-id="spr-depth-out">0.8</output>
+            </div>
+            <div class="status-line">検出グループ: <b data-id="sprite-groups">-</b></div>
           </div>
           <div data-id="depth-rows" hidden>
             <div class="slider-row">
@@ -152,8 +181,10 @@ export class Panel {
     this.padEl = q('[data-id="pad"]');
     this.fpsEl = q('[data-id="fps"]');
     this.pauseBtn = q<HTMLButtonElement>('[data-id="pause"]');
+    this.romMessageEl = q('[data-id="rom-message"]');
     this.messageEl = q('[data-id="message"]');
     this.lkgBtn = q<HTMLButtonElement>('[data-id="lkg"]');
+    this.spriteGroupsEl = q('[data-id="sprite-groups"]');
 
     const fileInput = q<HTMLInputElement>('[data-id="file"]');
     q('[data-id="open"]').addEventListener("click", () => fileInput.click());
@@ -178,6 +209,25 @@ export class Panel {
     gap.addEventListener("input", () => {
       gapOut.textContent = Number(gap.value).toFixed(2);
       cb.onLayerGap(Number(gap.value));
+    });
+
+    const spriteMargin = q<HTMLInputElement>("#spr-margin");
+    const spriteMarginOut = q('[data-id="spr-margin-out"]');
+    spriteMargin.addEventListener("input", () => {
+      spriteMarginOut.textContent = `${Number(spriteMargin.value)}px`;
+      cb.onSpriteGroupMargin(Number(spriteMargin.value));
+    });
+
+    const spriteLimit = q<HTMLSelectElement>("#spr-limit");
+    spriteLimit.addEventListener("change", () => {
+      cb.onSpriteGroupLimit(Number(spriteLimit.value));
+    });
+
+    const spriteDepth = q<HTMLInputElement>("#spr-depth");
+    const spriteDepthOut = q('[data-id="spr-depth-out"]');
+    spriteDepth.addEventListener("input", () => {
+      spriteDepthOut.textContent = Number(spriteDepth.value).toFixed(1);
+      cb.onSpriteDepthSpread(Number(spriteDepth.value));
     });
 
     const aspect = q<HTMLSelectElement>("#aspect");
@@ -252,6 +302,24 @@ export class Panel {
     );
   }
 
+  get spriteGroupMargin(): number {
+    return Number(
+      this.rootEl.querySelector<HTMLInputElement>("#spr-margin")!.value,
+    );
+  }
+
+  get spriteGroupLimit(): number {
+    return Number(
+      this.rootEl.querySelector<HTMLSelectElement>("#spr-limit")!.value,
+    );
+  }
+
+  get spriteDepthSpread(): number {
+    return Number(
+      this.rootEl.querySelector<HTMLInputElement>("#spr-depth")!.value,
+    );
+  }
+
   get initialDepthScale(): number {
     return Panel.DEFAULT_DEPTH_SCALE;
   }
@@ -260,7 +328,7 @@ export class Panel {
   private applyDisplayModeRows(): void {
     const depth = this.dispModeSel.value === "depth";
     this.rootEl
-      .querySelector('[data-id="row-gap"]')!
+      .querySelector('[data-id="layer-rows"]')!
       .toggleAttribute("hidden", depth);
     this.rootEl
       .querySelector('[data-id="depth-rows"]')!
@@ -298,6 +366,12 @@ export class Panel {
 
   setFps(fps: number | null): void {
     this.fpsEl.textContent = fps === null ? "-" : fps.toFixed(1);
+  }
+
+  setSpriteGroupCount(count: number | null): void {
+    if (count === this.lastSpriteGroupCount) return;
+    this.lastSpriteGroupCount = count;
+    this.spriteGroupsEl.textContent = count === null ? "-" : String(count);
   }
 
   setPaused(paused: boolean): void {
@@ -347,6 +421,16 @@ export class Panel {
   showError(msg: string): void {
     this.messageEl.className = "message error";
     this.messageEl.textContent = msg;
+  }
+
+  showRomError(msg: string): void {
+    this.romMessageEl.className = "message rom-message error";
+    this.romMessageEl.textContent = msg;
+  }
+
+  clearRomMessage(): void {
+    this.romMessageEl.className = "message rom-message";
+    this.romMessageEl.textContent = "";
   }
 
   showInfo(msg: string): void {

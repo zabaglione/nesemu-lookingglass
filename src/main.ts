@@ -6,7 +6,9 @@ import { InputManager } from "./emulator/input";
 import { buildTestRom } from "./emulator/testRom";
 import { SceneInteraction } from "./scene/interaction";
 import {
+  getLookingGlassRecoverySnapshot,
   initLookingGlass,
+  installLookingGlassRecovery,
   pinLookingGlassView,
   toggleLookingGlass,
 } from "./scene/lookingglass";
@@ -49,6 +51,7 @@ const depthLayerNames = ["behind", "bg", "front"] as const;
 const lastDepthVersions = { behind: 0, bg: 0, front: 0 };
 // パネルの調整値(モデル読み込み前の変更も、読み込み後に反映する)
 const depthSettings = { inferSize: 252, smoothing: 1 };
+const spriteGroupingSettings = { margin: 4, limit: 8 };
 
 /**
  * 深度モデルがブラウザキャッシュ(transformers.jsのCache API)に
@@ -134,6 +137,15 @@ const panel = new Panel(document.getElementById("panel-root")!, {
     }
   },
   onLayerGap: (v) => stage.setLayerGap(v),
+  onSpriteGroupMargin: (v) => {
+    spriteGroupingSettings.margin = v;
+    core.setSpriteGrouping(v, spriteGroupingSettings.limit);
+  },
+  onSpriteGroupLimit: (v) => {
+    spriteGroupingSettings.limit = v;
+    core.setSpriteGrouping(spriteGroupingSettings.margin, v);
+  },
+  onSpriteDepthSpread: (v) => stage.setSpriteDepthSpread(v),
   onDepthScale: (v) => stage.setDepthScale(v),
   onDepthInferSize: (px) => {
     depthSettings.inferSize = px;
@@ -158,11 +170,38 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onResetGame: () => core.resetGame(),
   onResetView: () => interaction.reset(),
 });
+installLookingGlassRecovery(renderer, (status, detail) => {
+  if (status === "recovering") {
+    panel.showInfo("Looking Glass表示を自動復旧しています…");
+  } else if (status === "recovered") {
+    panel.showInfo("Looking Glass表示を復旧しました。");
+  } else {
+    panel.showError(
+      `Looking Glass表示を自動復旧できませんでした: ${detail ?? "unknown error"}。表示ボタンを押し直してください。`,
+    );
+  }
+});
 stage.setLayerGap(panel.initialGap);
+core.setSpriteGrouping(panel.spriteGroupMargin, panel.spriteGroupLimit);
+stage.setSpriteDepthSpread(panel.spriteDepthSpread);
 stage.setDepthScale(panel.initialDepthScale);
+
+function commitLayerFrames(): void {
+  const frames = core.updateLayers();
+  stage.commitFrame(frames);
+  panel.setSpriteGroupCount(
+    core.romLoaded
+      ? frames.spriteGroups.reduce(
+          (count, group) => count + Number(group.visible),
+          0,
+        )
+      : null,
+  );
+}
 
 async function loadRomBytes(bytes: Uint8Array, name: string): Promise<void> {
   panel.clearMessage();
+  panel.clearRomMessage();
   try {
     await audio.ensureStarted();
   } catch (e) {
@@ -171,7 +210,13 @@ async function loadRomBytes(bytes: Uint8Array, name: string): Promise<void> {
   try {
     core.loadRom(bytes);
   } catch (e) {
-    panel.showError(`ROMを読み込めませんでした: ${(e as Error).message}`);
+    const detail = (e as Error).message;
+    const unsupported = /^Unsupported mapper: (\d+)$/.exec(detail);
+    panel.showRomError(
+      unsupported
+        ? `未対応のROMです。Mapper ${unsupported[1]}には対応していません。`
+        : `ROMを読み込めませんでした: ${detail}`,
+    );
     return;
   }
   paused = false;
@@ -204,6 +249,8 @@ async function handleLookingGlass(): Promise<void> {
 
 renderer.xr.addEventListener("sessionend", () => {
   panel.setLkgActive(false);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  fitCamera();
 });
 
 // ---- ドラッグ&ドロップでROM読み込み ----
@@ -221,7 +268,7 @@ window.addEventListener("drop", (e) => {
   const file = e.dataTransfer?.files?.[0];
   if (!file) return;
   if (!file.name.toLowerCase().endsWith(".nes")) {
-    panel.showError("iNES形式(.nes)のファイルをドロップしてください。");
+    panel.showRomError("iNES形式(.nes)のファイルをドロップしてください。");
     return;
   }
   void loadRomFile(file);
@@ -248,6 +295,15 @@ fitCamera();
 
 // 開発時のみ: 動作検証用フック
 if (import.meta.env.DEV) {
+  const simulateContextLoss = (durationMs = 250): boolean => {
+    const extension = renderer
+      .getContext()
+      .getExtension("WEBGL_lose_context");
+    if (!extension) return false;
+    extension.loseContext();
+    window.setTimeout(() => extension.restoreContext(), durationMs);
+    return true;
+  };
   (window as unknown as Record<string, unknown>).__nesDebug = {
     core,
     stage,
@@ -255,6 +311,10 @@ if (import.meta.env.DEV) {
     camera,
     interaction,
     pinLookingGlassView,
+    get lookingGlassRecovery() {
+      return getLookingGlassRecoverySnapshot();
+    },
+    simulateContextLoss,
     get depthEstimator() {
       return depthEstimator;
     },
@@ -266,11 +326,11 @@ if (import.meta.env.DEV) {
         core.frame();
       }
       if (stage.displayMode === "depth") {
-        const frames = core.updateLayers();
+        const frames = core.updateLayers(false);
         stage.commitFrame(frames);
         depthEstimator?.submit(frames);
       } else {
-        stage.commitFrame(core.updateLayers());
+        commitLayerFrames();
       }
       renderer.render(stage.scene, camera);
     },
@@ -303,7 +363,7 @@ renderer.setAnimationLoop(() => {
   }
 
   if (stage.displayMode === "depth") {
-    const frames = core.updateLayers();
+    const frames = core.updateLayers(false);
     stage.commitFrame(frames);
     if (depthEstimator) {
       depthEstimator.submit(frames);
@@ -316,7 +376,7 @@ renderer.setAnimationLoop(() => {
       }
     }
   } else {
-    stage.commitFrame(core.updateLayers());
+    commitLayerFrames();
   }
   interaction.update(dt);
 
