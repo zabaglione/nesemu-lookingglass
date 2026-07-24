@@ -36,6 +36,10 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onDemoRom: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
   onEnterLookingGlass: () => void handleLookingGlass(),
   onLayerGap: (v) => stage.setLayerGap(v),
+  onAspectMode: (mode) => {
+    stage.setAspectMode(mode);
+    fitCamera();
+  },
   onVolume: (v) => audio.setVolume(v),
   onTogglePause: () => {
     if (!core.romLoaded) return;
@@ -114,15 +118,23 @@ window.addEventListener("drop", (e) => {
 });
 
 // ---- リサイズ ----
-function onResize(): void {
+// ウィンドウがどんな縦横比でも画面プレーン全体が視野に収まるよう、
+// カメラ距離をフィットさせる(縦長ウィンドウで左右が切れるのを防ぐ)
+const FIT_MARGIN = 1.15;
+function fitCamera(): void {
   const w = window.innerWidth;
   const h = window.innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
+  const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+  const zForHeight = ((stage.screenHeight / 2) * FIT_MARGIN) / Math.tan(halfFov);
+  const zForWidth =
+    ((stage.screenWidth / 2) * FIT_MARGIN) / (Math.tan(halfFov) * camera.aspect);
+  camera.position.z = Math.max(zForHeight, zForWidth);
   camera.updateProjectionMatrix();
 }
-window.addEventListener("resize", onResize);
-onResize();
+window.addEventListener("resize", fitCamera);
+fitCamera();
 
 // 開発時のみ: 動作検証用フック
 if (import.meta.env.DEV) {

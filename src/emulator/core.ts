@@ -87,11 +87,12 @@ export class NesCore {
         const s = srcRow + x + CROP_X;
 
         // 背景タイル層: pixrenderedのbit8が「不透明な背景ピクセル」
+        // 色はjsnes内部の0xBBGGRR形式(赤が下位バイト)
         if (pix[s] > 0xff) {
           const c = bgbuf[s];
-          bgOut[o] = (c >> 16) & 0xff;
+          bgOut[o] = c & 0xff;
           bgOut[o + 1] = (c >> 8) & 0xff;
-          bgOut[o + 2] = c & 0xff;
+          bgOut[o + 2] = (c >> 16) & 0xff;
           bgOut[o + 3] = 255;
         } else {
           bgOut[o + 3] = 0;
@@ -99,9 +100,9 @@ export class NesCore {
 
         const b = behind[s];
         if (b !== LAYER_NONE) {
-          behindOut[o] = (b >> 16) & 0xff;
+          behindOut[o] = b & 0xff;
           behindOut[o + 1] = (b >> 8) & 0xff;
-          behindOut[o + 2] = b & 0xff;
+          behindOut[o + 2] = (b >> 16) & 0xff;
           behindOut[o + 3] = 255;
         } else {
           behindOut[o + 3] = 0;
@@ -109,9 +110,9 @@ export class NesCore {
 
         const f = front[s];
         if (f !== LAYER_NONE) {
-          frontOut[o] = (f >> 16) & 0xff;
+          frontOut[o] = f & 0xff;
           frontOut[o + 1] = (f >> 8) & 0xff;
-          frontOut[o + 2] = f & 0xff;
+          frontOut[o + 2] = (f >> 16) & 0xff;
           frontOut[o + 3] = 255;
         } else {
           frontOut[o + 3] = 0;
@@ -121,9 +122,9 @@ export class NesCore {
 
     const bd = ppu.layerBackdropColor >>> 0;
     this.frames.backdrop = [
-      ((bd >> 16) & 0xff) / 255,
-      ((bd >> 8) & 0xff) / 255,
       (bd & 0xff) / 255,
+      ((bd >> 8) & 0xff) / 255,
+      ((bd >> 16) & 0xff) / 255,
     ];
 
     return this.frames;

@@ -168,6 +168,20 @@ button.btn.lkg {
   accent-color: var(--accent);
 }
 
+.slider-row select {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.slider-row select option {
+  background: #14161e;
+}
+
 .slider-row output {
   width: 36px;
   flex: none;

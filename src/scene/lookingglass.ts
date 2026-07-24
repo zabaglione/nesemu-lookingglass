@@ -38,7 +38,11 @@ export async function toggleLookingGlass(
   if (!xr) {
     throw new Error("WebXRが利用できません");
   }
-  const session = await xr.requestSession("immersive-vr");
+  // three.jsは既定でlocal-floor基準空間を要求するため、
+  // セッション機能として明示的に有効化しておく(three公式VRButtonと同じ)
+  const session = await xr.requestSession("immersive-vr", {
+    optionalFeatures: ["local-floor", "bounded-floor", "layers"],
+  });
   await renderer.xr.setSession(session);
   return true;
 }

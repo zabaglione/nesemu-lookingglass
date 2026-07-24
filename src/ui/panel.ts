@@ -1,10 +1,13 @@
 // 日本語UIパネル。DOMを組み立ててコールバックを配線する。
 
+import type { AspectMode } from "../scene/stage";
+
 export interface PanelCallbacks {
   onRomFile(file: File): void;
   onDemoRom(): void;
   onEnterLookingGlass(): void;
   onLayerGap(value: number): void;
+  onAspectMode(mode: AspectMode): void;
   onVolume(value: number): void;
   onTogglePause(): void;
   onResetGame(): void;
@@ -51,6 +54,13 @@ export class Panel {
             <label for="gap">層間距離</label>
             <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.1" />
             <output data-id="gap-out">0.10</output>
+          </div>
+          <div class="slider-row">
+            <label for="aspect">画面比</label>
+            <select id="aspect">
+              <option value="tv" selected>TV(4:3相当)</option>
+              <option value="square">ドット等倍</option>
+            </select>
           </div>
           <div class="slider-row">
             <label for="vol">音量</label>
@@ -127,6 +137,11 @@ export class Panel {
     gap.addEventListener("input", () => {
       gapOut.textContent = Number(gap.value).toFixed(2);
       cb.onLayerGap(Number(gap.value));
+    });
+
+    const aspect = q<HTMLSelectElement>("#aspect");
+    aspect.addEventListener("change", () => {
+      cb.onAspectMode(aspect.value as AspectMode);
     });
 
     const vol = q<HTMLInputElement>("#vol");
