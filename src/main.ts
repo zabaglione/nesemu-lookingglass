@@ -12,7 +12,7 @@ import {
   pinLookingGlassView,
   toggleLookingGlass,
 } from "./scene/lookingglass";
-import { Stage } from "./scene/stage";
+import { Stage, type DisplayMode } from "./scene/stage";
 import { Panel } from "./ui/panel";
 
 const FRAME_MS = 1000 / 60.0988; // NTSC NESのフレームレート
@@ -48,7 +48,10 @@ let depthEstimator: InstanceType<
 > | null = null;
 let depthLoading = false;
 const depthLayerNames = ["behind", "bg", "front"] as const;
+const backgroundDepthLayerNames = ["bg"] as const;
 const lastDepthVersions = { behind: 0, bg: 0, front: 0 };
+let requestedDisplayMode: DisplayMode = "layers";
+let frameRefreshRequested = true;
 // パネルの調整値(モデル読み込み前の変更も、読み込み後に反映する)
 const depthSettings = { inferSize: 252, smoothing: 1 };
 const spriteGroupingSettings = { margin: 4, limit: 8 };
@@ -72,9 +75,11 @@ async function isDepthModelCached(): Promise<boolean> {
   }
 }
 
-async function enableDepthMode(): Promise<void> {
+async function enableDepthMode(
+  mode: Exclude<DisplayMode, "layers">,
+): Promise<void> {
   if (depthEstimator || depthLoading) {
-    stage.setDisplayMode("depth");
+    stage.setDisplayMode(mode);
     return;
   }
 
@@ -86,6 +91,7 @@ async function enableDepthMode(): Promise<void> {
       "キャンセル",
     );
     if (!ok) {
+      requestedDisplayMode = "layers";
       stage.setLayerGap(panel.layerGap);
       stage.setDisplayMode("layers");
       panel.setDisplayMode("layers");
@@ -93,7 +99,7 @@ async function enableDepthMode(): Promise<void> {
     }
   }
 
-  stage.setDisplayMode("depth");
+  stage.setDisplayMode(mode);
   depthLoading = true;
   panel.showInfo("AI深度モデルを準備中…");
   try {
@@ -103,6 +109,10 @@ async function enableDepthMode(): Promise<void> {
     est.setInferSize(depthSettings.inferSize);
     est.smoothing = depthSettings.smoothing;
     depthEstimator = est;
+    frameRefreshRequested = true;
+    if (requestedDisplayMode !== "layers") {
+      stage.setDisplayMode(requestedDisplayMode);
+    }
     if (est.usingWebGPU) {
       panel.showInfo("AI深度: WebGPUで実行中です。");
     } else {
@@ -114,6 +124,7 @@ async function enableDepthMode(): Promise<void> {
     panel.showError(
       `深度モデルを読み込めませんでした: ${(e as Error).message}`,
     );
+    requestedDisplayMode = "layers";
     stage.setLayerGap(panel.layerGap);
     stage.setDisplayMode("layers");
     panel.setDisplayMode("layers");
@@ -127,9 +138,11 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onDemoRom: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
   onEnterLookingGlass: () => void handleLookingGlass(),
   onDisplayMode: (mode) => {
-    if (mode === "depth") {
+    requestedDisplayMode = mode;
+    frameRefreshRequested = true;
+    if (mode !== "layers") {
       stage.setLayerGap(panel.depthGap);
-      void enableDepthMode();
+      void enableDepthMode(mode);
     } else {
       stage.setLayerGap(panel.layerGap);
       stage.setDisplayMode("layers");
@@ -140,22 +153,26 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onSpriteGroupMargin: (v) => {
     spriteGroupingSettings.margin = v;
     core.setSpriteGrouping(v, spriteGroupingSettings.limit);
+    frameRefreshRequested = true;
   },
   onSpriteGroupLimit: (v) => {
     spriteGroupingSettings.limit = v;
     core.setSpriteGrouping(spriteGroupingSettings.margin, v);
+    frameRefreshRequested = true;
   },
   onSpriteDepthSpread: (v) => stage.setSpriteDepthSpread(v),
   onDepthScale: (v) => stage.setDepthScale(v),
   onDepthInferSize: (px) => {
     depthSettings.inferSize = px;
     depthEstimator?.setInferSize(px);
+    frameRefreshRequested = true;
   },
   onDepthSmoothing: (v) => {
     depthSettings.smoothing = v;
     if (depthEstimator) {
       depthEstimator.smoothing = v;
     }
+    frameRefreshRequested = true;
   },
   onAspectMode: (mode) => {
     stage.setAspectMode(mode);
@@ -189,6 +206,12 @@ stage.setDepthScale(panel.initialDepthScale);
 function commitLayerFrames(): void {
   const frames = core.updateLayers();
   stage.commitFrame(frames);
+  updateSpriteGroupCount(frames);
+}
+
+function updateSpriteGroupCount(
+  frames: ReturnType<NesCore["updateLayers"]>,
+): void {
   panel.setSpriteGroupCount(
     core.romLoaded
       ? frames.spriteGroups.reduce(
@@ -197,6 +220,32 @@ function commitLayerFrames(): void {
         )
       : null,
   );
+}
+
+function commitDepthFrame(): void {
+  const backgroundOnly = stage.displayMode === "background-depth";
+  const frames = core.updateLayers(backgroundOnly);
+  stage.commitFrame(frames);
+  depthEstimator?.submit(
+    frames,
+    backgroundOnly ? backgroundDepthLayerNames : depthLayerNames,
+  );
+  if (backgroundOnly) updateSpriteGroupCount(frames);
+}
+
+function updateDepthResults(): void {
+  if (!depthEstimator) return;
+  const names =
+    stage.displayMode === "background-depth"
+      ? backgroundDepthLayerNames
+      : depthLayerNames;
+  for (const name of names) {
+    const layer = depthEstimator.layers[name];
+    if (layer.version !== lastDepthVersions[name]) {
+      lastDepthVersions[name] = layer.version;
+      stage.updateDepth(name, layer.depth);
+    }
+  }
 }
 
 async function loadRomBytes(bytes: Uint8Array, name: string): Promise<void> {
@@ -220,6 +269,7 @@ async function loadRomBytes(bytes: Uint8Array, name: string): Promise<void> {
     return;
   }
   paused = false;
+  frameRefreshRequested = true;
   panel.setPaused(false);
   panel.setRomInfo(name, core.mapperType);
 }
@@ -279,6 +329,9 @@ window.addEventListener("drop", (e) => {
 // カメラ距離をフィットさせる(縦長ウィンドウで左右が切れるのを防ぐ)
 const FIT_MARGIN = 1.15;
 function fitCamera(): void {
+  // WebXR表示中の描画サイズはXRWebGLLayerが管理する。ウィンドウ移動や
+  // 全画面化でresizeが発生してもsetSizeを呼ばず、終了時に再調整する。
+  if (renderer.xr.isPresenting) return;
   const w = window.innerWidth;
   const h = window.innerHeight;
   renderer.setSize(w, h, false);
@@ -325,10 +378,9 @@ if (import.meta.env.DEV) {
         input.poll();
         core.frame();
       }
-      if (stage.displayMode === "depth") {
-        const frames = core.updateLayers(false);
-        stage.commitFrame(frames);
-        depthEstimator?.submit(frames);
+      if (stage.displayMode !== "layers") {
+        commitDepthFrame();
+        updateDepthResults();
       } else {
         commitLayerFrames();
       }
@@ -343,7 +395,9 @@ let acc = 0;
 let fpsWindowStart = last;
 let fpsFrames = 0;
 
-renderer.setAnimationLoop(() => {
+let animationFaulted = false;
+
+function renderFrame(): void {
   const now = performance.now();
   let dt = now - last;
   last = now;
@@ -362,21 +416,19 @@ renderer.setAnimationLoop(() => {
     if (steps === 3) acc = 0; // 追いつけないときは切り捨てる
   }
 
-  if (stage.displayMode === "depth") {
-    const frames = core.updateLayers(false);
-    stage.commitFrame(frames);
-    if (depthEstimator) {
-      depthEstimator.submit(frames);
-      for (const name of depthLayerNames) {
-        const layer = depthEstimator.layers[name];
-        if (layer.version !== lastDepthVersions[name]) {
-          lastDepthVersions[name] = layer.version;
-          stage.updateDepth(name, layer.depth);
-        }
-      }
+  // ポーズ中は同じ画面データをGPUへ再転送しない。Looking Glassの
+  // XR描画自体は継続し、静止したquiltを出力し続ける。
+  const refreshGameTextures =
+    frameRefreshRequested || !core.romLoaded || !paused;
+  if (stage.displayMode !== "layers") {
+    if (refreshGameTextures) {
+      commitDepthFrame();
+      frameRefreshRequested = false;
     }
-  } else {
+    updateDepthResults();
+  } else if (refreshGameTextures) {
     commitLayerFrames();
+    frameRefreshRequested = false;
   }
   interaction.update(dt);
 
@@ -396,5 +448,27 @@ renderer.setAnimationLoop(() => {
     fpsFrames = 0;
     fpsWindowStart = now;
     panel.setGamepad(input.gamepadName());
+  }
+}
+
+renderer.setAnimationLoop(() => {
+  try {
+    renderFrame();
+    animationFaulted = false;
+  } catch (error) {
+    // WebXR側はコールバック例外後に次の描画を予約しないため、ここで例外を
+    // 外へ漏らさずループを維持する。エミュレーションだけを停止し、
+    // 最後に正常描画できたフレームをLooking Glassへ送り続ける。
+    if (!animationFaulted) {
+      console.error("Animation frame failed.", error);
+      panel.showError(
+        `描画中にエラーが発生したためゲームを一時停止しました: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    animationFaulted = true;
+    paused = true;
+    panel.setPaused(true);
   }
 });

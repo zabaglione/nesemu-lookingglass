@@ -11,6 +11,10 @@ import type * as THREE from "three";
 let polyfill: LookingGlassWebXRPolyfill | null = null;
 let animationFramePatched = false;
 let frameEndPatched = false;
+let baseLayerPatched = false;
+let sessionCleanupPatched = false;
+let configPatched = false;
+let removeTrackedConfigListeners: (() => void) | null = null;
 
 type WakeLockSentinelLike = EventTarget & {
   readonly released: boolean;
@@ -32,6 +36,8 @@ type DeviceAnimationRequest = {
 type LookingGlassDevice = {
   requestAnimationFrame: (cb: FrameRequestCallback) => number;
   cancelAnimationFrame: (handle: number) => void;
+  requestSession: (...args: unknown[]) => Promise<unknown>;
+  onBaseLayerSet: (sessionId: unknown, layer: unknown) => void;
   onFrameEnd?: (sessionId: unknown) => void;
 };
 
@@ -80,16 +86,66 @@ let lastRecoveryError: string | null = null;
 let nextAnimationHandle = 1;
 const pendingAnimationFrames = new Map<number, DeviceAnimationRequest>();
 
+const expectedPolyfillWarnings = new Set([
+  "XRSystem already defined on global.",
+  "XRSession already defined on global.",
+  "XRSessionEvent already defined on global.",
+  "XRFrame already defined on global.",
+  "XRView already defined on global.",
+  "XRViewport already defined on global.",
+  "XRViewerPose already defined on global.",
+  "XRWebGLLayer already defined on global.",
+  "XRSpace already defined on global.",
+  "XRReferenceSpace already defined on global.",
+  "XRReferenceSpaceEvent already defined on global.",
+  "XRInputSource already defined on global.",
+  "XRInputSourceEvent already defined on global.",
+  "XRInputSourcesChangeEvent already defined on global.",
+  "XRRenderState already defined on global.",
+  "XRRigidTransform already defined on global.",
+  "XRPose already defined on global.",
+  'Looking Glass WebXR "polyfill" overriding native WebXR API.',
+]);
+
+function createLookingGlassPolyfill(): LookingGlassWebXRPolyfill {
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]): void => {
+    if (
+      args.length === 1 &&
+      typeof args[0] === "string" &&
+      expectedPolyfillWarnings.has(args[0])
+    ) {
+      return;
+    }
+    originalWarn.apply(console, args);
+  };
+  try {
+    return new LookingGlassWebXRPolyfill({
+      // シーンは原点中心・幅約1のNES画面なので、カメラ焦点を原点に置く
+      targetX: 0,
+      targetY: 0,
+      targetZ: 0,
+      targetDiam: 1.6,
+      fovy: (14 * Math.PI) / 180,
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 export function initLookingGlass(appCanvas: HTMLCanvasElement): void {
   if (polyfill) return;
-  polyfill = new LookingGlassWebXRPolyfill({
-    // シーンは原点中心・幅約1のNES画面なので、カメラ焦点を原点に置く
-    targetX: 0,
-    targetY: 0,
-    targetZ: 0,
-    targetDiam: 1.6,
-    fovy: (14 * Math.PI) / 180,
-  });
+  // ポリフィルはthree.jsサンプル用のVRButtonを5秒間探し、存在しないと
+  // 警告を出す。本アプリは独自ボタンを使うため、非表示の互換要素を渡す。
+  const compatibilityButton = document.createElement("button");
+  compatibilityButton.id = "VRButton";
+  compatibilityButton.type = "button";
+  compatibilityButton.hidden = true;
+  compatibilityButton.tabIndex = -1;
+  compatibilityButton.setAttribute("aria-hidden", "true");
+  polyfill = createLookingGlassPolyfill();
+  document.body.append(compatibilityButton);
+  stabilizeLookingGlassConfig();
   // deviceの生成は非同期なので、ここでは存在する場合だけ先行適用する。
   // セッション開始時にも必ず再試行する。
   ensureDeviceAnimationFramePatched();
@@ -115,6 +171,85 @@ function suppressPolyfillCanvasControls(appCanvas: HTMLCanvasElement): void {
   // Looking Glass側キャンバスにも確実に先行する。
   appCanvas.addEventListener("mousemove", stop, true);
   appCanvas.addEventListener("wheel", stop, { capture: true, passive: false });
+  appCanvas.addEventListener("keydown", stop, true);
+  appCanvas.addEventListener("keyup", stop, true);
+}
+
+/**
+ * ポリフィルの内蔵操作ループは、キー入力がない時もtargetX/Y/Zへ同じ値を
+ * 毎フレーム再設定する。そのたびにquilt textureを再確保する実装なので、
+ * 同値更新を抑止する。またXRレイヤーが登録した設定変更リスナーを追跡し、
+ * WebGL復旧時に破棄済みGPUリソースを参照する旧リスナーを除去できるようにする。
+ */
+function stabilizeLookingGlassConfig(): void {
+  if (configPatched) return;
+  const config = LookingGlassConfig as unknown as {
+    [key: string]: unknown;
+    updateViewControls(
+      value: Record<string, unknown> | undefined,
+    ): void;
+    addEventListener(
+      type: string,
+      listener: EventListenerOrEventListenerObject | null,
+      options?: boolean | AddEventListenerOptions,
+    ): void;
+    removeEventListener(
+      type: string,
+      listener: EventListenerOrEventListenerObject | null,
+      options?: boolean | EventListenerOptions,
+    ): void;
+  };
+  const originalUpdate = config.updateViewControls.bind(config);
+  const originalAdd = config.addEventListener.bind(config);
+  const originalRemove = config.removeEventListener.bind(config);
+  const tracked = new Set<EventListenerOrEventListenerObject>();
+
+  config.updateViewControls = (
+    value: Record<string, unknown> | undefined,
+  ): void => {
+    if (value) {
+      const unchanged = Object.entries(value).every(([key, next]) => {
+        const current = config[key];
+        if (
+          key === "quiltResolution" &&
+          current &&
+          next &&
+          typeof current === "object" &&
+          typeof next === "object"
+        ) {
+          const a = current as { width?: unknown; height?: unknown };
+          const b = next as { width?: unknown; height?: unknown };
+          return a.width === b.width && a.height === b.height;
+        }
+        return Object.is(current, next);
+      });
+      if (unchanged) return;
+    }
+    originalUpdate(value);
+  };
+  config.addEventListener = (
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void => {
+    originalAdd(type, listener, options);
+    if (type === "on-config-changed" && listener) tracked.add(listener);
+  };
+  config.removeEventListener = (
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | EventListenerOptions,
+  ): void => {
+    originalRemove(type, listener, options);
+    if (type === "on-config-changed" && listener) tracked.delete(listener);
+  };
+  removeTrackedConfigListeners = () => {
+    for (const listener of Array.from(tracked)) {
+      originalRemove("on-config-changed", listener);
+    }
+    tracked.clear();
+  };
+  configPatched = true;
 }
 
 /**
@@ -196,6 +331,7 @@ async function releaseWakeLocks(): Promise<void> {
  * フレームバッファ再確保を伴うので、無条件書き込みは避ける。
  */
 export function pinLookingGlassView(): void {
+  if (contextUnavailable || recoveryInProgress) return;
   const c = LookingGlassConfig;
   if (c.trackballX !== 0) c.trackballX = 0;
   if (c.trackballY !== 0) c.trackballY = 0;
@@ -309,6 +445,9 @@ function rebuildLookingGlassLayer(renderer: THREE.WebGLRenderer): void {
     throw new Error("XRWebGLLayer is unavailable");
   }
 
+  // 旧レイヤーのリスナーは復帰前のWebGLTexture/FBOを閉包している。
+  // 新レイヤーを作る前に必ず外し、無効なGPUオブジェクトへの書き込みを止める。
+  removeTrackedConfigListeners?.();
   const attributes = gl.getContextAttributes();
   const replacement = new LayerConstructor(session, gl, {
     alpha: true,
@@ -522,6 +661,8 @@ function ensureDeviceAnimationFramePatched(): boolean {
   if (!device) {
     return false;
   }
+  patchDeviceSessionCleanup(device);
+  patchDeviceBaseLayer(device);
   patchDeviceFrameEnd(device);
   if (animationFramePatched) return true;
 
@@ -583,6 +724,54 @@ function ensureDeviceAnimationFramePatched(): boolean {
 }
 
 /**
+ * three.jsがnear/farを更新すると、同じbaseLayerが再通知される。
+ * ポリフィルはこれを二重設定として警告するため、同一参照の再通知を除外する。
+ */
+function patchDeviceBaseLayer(device: LookingGlassDevice): void {
+  if (baseLayerPatched) return;
+  const originalOnBaseLayerSet = device.onBaseLayerSet.bind(device);
+  const layersBySession = new Map<unknown, unknown>();
+  device.onBaseLayerSet = (sessionId: unknown, layer: unknown): void => {
+    if (layersBySession.get(sessionId) === layer) return;
+    layersBySession.set(sessionId, layer);
+    originalOnBaseLayerSet(sessionId, layer);
+  };
+  baseLayerPatched = true;
+}
+
+/**
+ * ポリフィルが登録するunloadは現在のChromiumでPermissions Policy警告に
+ * なるため、同じ終了処理を推奨されるpagehideへ置き換える。
+ */
+function patchDeviceSessionCleanup(device: LookingGlassDevice): void {
+  if (sessionCleanupPatched) return;
+  const originalRequestSession = device.requestSession;
+  device.requestSession = function (
+    this: LookingGlassDevice,
+    ...args: unknown[]
+  ): Promise<unknown> {
+    const originalAddEventListener = window.addEventListener;
+    window.addEventListener = function (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ): void {
+      if (type === "unload") {
+        originalAddEventListener.call(window, "pagehide", listener, options);
+        return;
+      }
+      originalAddEventListener.call(window, type, listener, options);
+    } as typeof window.addEventListener;
+    try {
+      return originalRequestSession.apply(this, args);
+    } finally {
+      window.addEventListener = originalAddEventListener;
+    }
+  };
+  sessionCleanupPatched = true;
+}
+
+/**
  * Looking Glass表示の開始/終了をトグルする。
  * 開始するとポリフィルがポップアップウィンドウを開くので、
  * ユーザーがLooking Glass側ディスプレイへ移動して全画面化する。
@@ -600,21 +789,22 @@ export async function toggleLookingGlass(
   if (!xr) {
     throw new Error("WebXRが利用できません");
   }
-  // three.jsは既定でlocal-floor基準空間を要求するため、
-  // セッション機能として明示的に有効化しておく(three公式VRButtonと同じ)
+  // three.jsが使用するlocal-floorだけを要求する。ポリフィル未対応の
+  // bounded-floor/layersを渡すと、接続のたびに不要な警告が出る。
   // XRSessionは生成時点で最初のフレームを予約するため、requestSessionより
   // 前に内部deviceのrAFを差し替えておく。
   if (!ensureDeviceAnimationFramePatched()) {
     throw new Error("Looking Glass device initialization is incomplete");
   }
   cancelAllDeviceAnimationFrames();
+  removeTrackedConfigListeners?.();
   contextUnavailable = false;
   recoveryInProgress = false;
   recoveryAttempt = 0;
   lastRecoveryError = null;
   lastDeviceFrameAt = performance.now();
   const session = await xr.requestSession("immersive-vr", {
-    optionalFeatures: ["local-floor", "bounded-floor", "layers"],
+    optionalFeatures: ["local-floor"],
   });
   await renderer.xr.setSession(session);
   // lkgCanvasはXRWebGLLayer生成時に初めて作られるため、セッション設定後に
@@ -627,6 +817,7 @@ export async function toggleLookingGlass(
   mountOutputCanvas();
   session.addEventListener("end", () => {
     cancelAllDeviceAnimationFrames();
+    removeTrackedConfigListeners?.();
     contextUnavailable = false;
     recoveryInProgress = false;
     recoveryAttempt = 0;

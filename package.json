@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:mapper23": "node --test tests/mapper23.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

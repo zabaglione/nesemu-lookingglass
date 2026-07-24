@@ -14,7 +14,7 @@ export const PLANE_H = (VISIBLE_H * 7) / (VISIBLE_W * 8);
 const MIN_GAP = 0.004;
 
 export type AspectMode = "tv" | "square";
-export type DisplayMode = "layers" | "depth";
+export type DisplayMode = "layers" | "background-depth" | "depth";
 
 type DepthLayer = {
   data: Uint8Array<ArrayBuffer>;
@@ -26,6 +26,7 @@ type DepthLayer = {
 type SpriteLayer = {
   texture: THREE.DataTexture;
   mesh: THREE.Mesh;
+  hybridMesh: THREE.Mesh;
   priority: SpritePriority;
   depth: number;
 };
@@ -46,10 +47,14 @@ export class Stage {
   private readonly layerBackground: THREE.Mesh;
   private readonly spriteLayers: SpriteLayer[];
   private readonly layersGroup = new THREE.Group();
+  private readonly hybridGroup = new THREE.Group();
   private readonly depthGroup = new THREE.Group();
   private readonly depthBackdrop: THREE.Mesh;
+  private readonly hybridBackdrop: THREE.Mesh;
+  private readonly hybridBackground: THREE.Mesh;
   private readonly depthLayers: Record<DepthLayerName, DepthLayer>;
   private gap = 0.1;
+  private depthScale = 0.18;
   private spriteDepthSpread = 0.8;
   private mode: DisplayMode = "layers";
 
@@ -57,7 +62,7 @@ export class Stage {
     void compositeTexData;
     this.scene.add(this.root);
     this.root.add(this.screen);
-    this.screen.add(this.layersGroup, this.depthGroup);
+    this.screen.add(this.layersGroup, this.hybridGroup, this.depthGroup);
 
     const geo = new THREE.PlaneGeometry(PLANE_W, PLANE_H);
     this.backdropMat = new THREE.MeshBasicMaterial({
@@ -74,11 +79,15 @@ export class Stage {
     );
     this.spriteLayers = frames.spriteGroups.map((group) => {
       const texture = this.makeTexture(group.rgba);
-      const mesh = new THREE.Mesh(geo, this.makeLayerMaterial(texture));
+      const material = this.makeLayerMaterial(texture);
+      const mesh = new THREE.Mesh(geo, material);
+      const hybridMesh = new THREE.Mesh(geo, material);
       mesh.visible = group.visible;
+      hybridMesh.visible = group.visible;
       return {
         texture,
         mesh,
+        hybridMesh,
         priority: group.priority,
         depth: group.depth,
       };
@@ -90,17 +99,28 @@ export class Stage {
     );
 
     this.depthBackdrop = new THREE.Mesh(geo, this.backdropMat);
+    this.hybridBackdrop = new THREE.Mesh(geo, this.backdropMat);
     this.depthLayers = {
       behind: this.makeDepthLayer(this.behindTex),
       bg: this.makeDepthLayer(this.bgTex),
       front: this.makeDepthLayer(this.frontTex),
     };
+    this.hybridBackground = new THREE.Mesh(
+      this.depthLayers.bg.mesh.geometry,
+      this.depthLayers.bg.material,
+    );
+    this.hybridGroup.add(
+      this.hybridBackdrop,
+      this.hybridBackground,
+      ...this.spriteLayers.map((layer) => layer.hybridMesh),
+    );
     this.depthGroup.add(
       this.depthBackdrop,
       this.depthLayers.behind.mesh,
       this.depthLayers.bg.mesh,
       this.depthLayers.front.mesh,
     );
+    this.hybridGroup.visible = false;
     this.depthGroup.visible = false;
     this.applyGap();
   }
@@ -108,6 +128,7 @@ export class Stage {
   setDisplayMode(mode: DisplayMode): void {
     this.mode = mode;
     this.layersGroup.visible = mode === "layers";
+    this.hybridGroup.visible = mode === "background-depth";
     this.depthGroup.visible = mode === "depth";
   }
 
@@ -116,9 +137,11 @@ export class Stage {
   }
 
   setDepthScale(v: number): void {
+    this.depthScale = v;
     for (const layer of Object.values(this.depthLayers)) {
       layer.material.uniforms.depthScale.value = v;
     }
+    this.applyGap();
   }
 
   /** 旧合成テクスチャAPIとの互換用。レイヤー別モードでは処理不要。 */
@@ -173,6 +196,7 @@ export class Stage {
       // 非表示グループはGPUへ転送しない。再表示時には必ず更新される。
       if (frame.visible) layer.texture.needsUpdate = true;
       layer.mesh.visible = frame.visible;
+      layer.hybridMesh.visible = frame.visible;
       layer.priority = frame.priority;
       layer.depth = frame.depth;
     });
@@ -188,7 +212,12 @@ export class Stage {
       const base = layer.priority === "behind" ? -0.5 : 1.5;
       const groupOffset = (layer.depth - 0.5) * this.spriteDepthSpread;
       layer.mesh.position.z = (base + groupOffset) * g;
+      layer.hybridMesh.position.z =
+        (base + groupOffset) * g +
+        (layer.priority === "front" ? this.depthScale : 0);
     });
+    this.hybridBackdrop.position.z = -1.5 * g;
+    this.hybridBackground.position.z = 0.5 * g;
     this.depthBackdrop.position.z = -1.5 * g;
     this.depthLayers.behind.mesh.position.z = -0.5 * g;
     this.depthLayers.bg.mesh.position.z = 0.5 * g;

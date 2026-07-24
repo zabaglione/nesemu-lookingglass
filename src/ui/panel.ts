@@ -68,11 +68,12 @@ export class Panel {
             <label for="dispmode">立体化</label>
             <select id="dispmode">
               <option value="layers" selected>レイヤー分離</option>
+              <option value="background-depth">背景のみAI深度＋スプライト分離(実験的)</option>
               <option value="depth">レイヤー別AI深度(実験的)</option>
             </select>
           </div>
           <div data-id="layer-rows">
-            <div class="slider-row">
+            <div class="slider-row" data-id="layer-gap-row">
               <label for="gap">層間距離</label>
               <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.04" />
               <output data-id="gap-out">0.04</output>
@@ -326,13 +327,17 @@ export class Panel {
 
   /** モードに応じてスライダー行の表示を切り替える */
   private applyDisplayModeRows(): void {
-    const depth = this.dispModeSel.value === "depth";
+    const mode = this.dispModeSel.value as DisplayMode;
+    const usesDepth = mode !== "layers";
     this.rootEl
       .querySelector('[data-id="layer-rows"]')!
-      .toggleAttribute("hidden", depth);
+      .toggleAttribute("hidden", mode === "depth");
+    this.rootEl
+      .querySelector('[data-id="layer-gap-row"]')!
+      .toggleAttribute("hidden", mode !== "layers");
     this.rootEl
       .querySelector('[data-id="depth-rows"]')!
-      .toggleAttribute("hidden", !depth);
+      .toggleAttribute("hidden", !usesDepth);
   }
 
   /** 表示モードをUIに反映する(モデル読み込み失敗時の巻き戻し用) */

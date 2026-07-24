@@ -93,13 +93,17 @@ export class DepthEstimator {
   }
 
   /**
-   * 背面スプライト、背景、前面スプライトを順番に1層ずつ推論する。
+   * 指定されたPPU層を順番に1層ずつ推論する。背景のみモードでは
+   * layers=["bg"]を渡し、スプライトの不要な推論を省略する。
    * 透明部分は背景色で埋め、出力時にマスクして他層の形状混入を防ぐ。
    */
-  submit(frames: LayerFrames): void {
-    if (!this.pipe || this.busy) return;
-    const name = DEPTH_LAYER_NAMES[this.nextLayer];
-    this.nextLayer = (this.nextLayer + 1) % DEPTH_LAYER_NAMES.length;
+  submit(
+    frames: LayerFrames,
+    layers: readonly DepthLayerName[] = DEPTH_LAYER_NAMES,
+  ): void {
+    if (!this.pipe || this.busy || layers.length === 0) return;
+    const name = layers[this.nextLayer % layers.length];
+    this.nextLayer = (this.nextLayer + 1) % layers.length;
     const source =
       name === "behind"
         ? frames.sprBehind

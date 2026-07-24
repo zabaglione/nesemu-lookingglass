@@ -5,6 +5,7 @@ import Mapper0 from "./mapper0.js";
 // layout with a submapper; legacy iNES ROMs are detected from register writes.
 // See https://www.nesdev.org/wiki/INES_Mapper_023
 class Mapper25 extends Mapper0 {
+  static mapperNumber = 25;
   static mapperName = "VRC2c/VRC4b/VRC4d";
 
   constructor(nes) {
@@ -210,7 +211,7 @@ class Mapper25 extends Mapper0 {
 
   loadROM() {
     if (!this.nes.rom.valid || this.nes.rom.romCount < 2) {
-      throw new Error("Mapper 25: Invalid ROM.");
+      throw new Error(`Mapper ${this.constructor.mapperNumber}: Invalid ROM.`);
     }
 
     const lastBank = this.nes.rom.romCount * 2 - 1;
