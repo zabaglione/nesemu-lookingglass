@@ -75,7 +75,7 @@ function patchDeviceAnimationFrame(): void {
     }
   ).device;
   if (!device) {
-    console.warn("Looking Glass: deviceが見つからずrAFパッチを適用できません");
+    console.warn("Looking Glass device not found; rAF patch was not applied.");
     return;
   }
 

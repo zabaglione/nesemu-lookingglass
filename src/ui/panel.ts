@@ -9,6 +9,8 @@ export interface PanelCallbacks {
   onDisplayMode(mode: DisplayMode): void;
   onLayerGap(value: number): void;
   onDepthScale(value: number): void;
+  onDepthInferSize(px: number): void;
+  onDepthSmoothing(value: number): void;
   onAspectMode(mode: AspectMode): void;
   onVolume(value: number): void;
   onTogglePause(): void;
@@ -17,6 +19,8 @@ export interface PanelCallbacks {
 }
 
 export class Panel {
+  private static readonly DEFAULT_DEPTH_SCALE = 0.08;
+
   private readonly rootEl: HTMLElement;
   private romNameEl!: HTMLElement;
   private mapperEl!: HTMLElement;
@@ -57,18 +61,40 @@ export class Panel {
             <label for="dispmode">立体化</label>
             <select id="dispmode">
               <option value="layers" selected>レイヤー分離</option>
-              <option value="depth">AI深度(実験的)</option>
+              <option value="depth">レイヤー別AI深度(実験的)</option>
             </select>
           </div>
           <div class="slider-row" data-id="row-gap">
             <label for="gap">層間距離</label>
-            <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.1" />
-            <output data-id="gap-out">0.10</output>
+            <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.04" />
+            <output data-id="gap-out">0.04</output>
           </div>
-          <div class="slider-row" data-id="row-depth" hidden>
-            <label for="dscale">深度強さ</label>
-            <input id="dscale" type="range" min="0" max="0.5" step="0.01" value="0.18" />
-            <output data-id="dscale-out">0.18</output>
+          <div data-id="depth-rows" hidden>
+            <div class="slider-row">
+              <label for="depth-gap">層間距離</label>
+              <input id="depth-gap" type="range" min="0" max="0.3" step="0.005" value="0.1" />
+              <output data-id="depth-gap-out">0.10</output>
+            </div>
+            <div class="slider-row">
+              <label for="dscale">深度強さ</label>
+              <input id="dscale" type="range" min="0" max="1" step="0.02" value="0.08" />
+              <output data-id="dscale-out">0.08</output>
+            </div>
+            <div class="slider-row">
+              <label for="dres">解像度</label>
+              <select id="dres">
+                <option value="154">154px(高速)</option>
+                <option value="196">196px</option>
+                <option value="252" selected>252px(標準)</option>
+                <option value="322">322px</option>
+                <option value="392">392px(精細)</option>
+              </select>
+            </div>
+            <div class="slider-row">
+              <label for="dsmooth">平滑化係数</label>
+              <input id="dsmooth" type="range" min="0.05" max="1" step="0.05" value="1" />
+              <output data-id="dsmooth-out">1.00</output>
+            </div>
           </div>
           <div class="slider-row">
             <label for="aspect">画面比</label>
@@ -172,6 +198,25 @@ export class Panel {
       cb.onDepthScale(Number(dscale.value));
     });
 
+    const depthGap = q<HTMLInputElement>("#depth-gap");
+    const depthGapOut = q('[data-id="depth-gap-out"]');
+    depthGap.addEventListener("input", () => {
+      depthGapOut.textContent = Number(depthGap.value).toFixed(2);
+      cb.onLayerGap(Number(depthGap.value));
+    });
+
+    const dres = q<HTMLSelectElement>("#dres");
+    dres.addEventListener("change", () => {
+      cb.onDepthInferSize(Number(dres.value));
+    });
+
+    const dsmooth = q<HTMLInputElement>("#dsmooth");
+    const dsmoothOut = q('[data-id="dsmooth-out"]');
+    dsmooth.addEventListener("input", () => {
+      dsmoothOut.textContent = Number(dsmooth.value).toFixed(2);
+      cb.onDepthSmoothing(Number(dsmooth.value));
+    });
+
     const vol = q<HTMLInputElement>("#vol");
     const volOut = q('[data-id="vol-out"]');
     vol.addEventListener("input", () => {
@@ -188,10 +233,27 @@ export class Panel {
     q(".panel-header").addEventListener("dblclick", () =>
       (toggle as HTMLButtonElement).click(),
     );
+    this.applyDisplayModeRows();
   }
 
   get initialGap(): number {
-    return 0.1;
+    return this.layerGap;
+  }
+
+  get layerGap(): number {
+    return Number(
+      this.rootEl.querySelector<HTMLInputElement>("#gap")!.value,
+    );
+  }
+
+  get depthGap(): number {
+    return Number(
+      this.rootEl.querySelector<HTMLInputElement>("#depth-gap")!.value,
+    );
+  }
+
+  get initialDepthScale(): number {
+    return Panel.DEFAULT_DEPTH_SCALE;
   }
 
   /** モードに応じてスライダー行の表示を切り替える */
@@ -201,7 +263,7 @@ export class Panel {
       .querySelector('[data-id="row-gap"]')!
       .toggleAttribute("hidden", depth);
     this.rootEl
-      .querySelector('[data-id="row-depth"]')!
+      .querySelector('[data-id="depth-rows"]')!
       .toggleAttribute("hidden", !depth);
   }
 
@@ -246,6 +308,40 @@ export class Panel {
     this.lkgBtn.textContent = active
       ? "Looking Glass表示を終了"
       : "Looking Glassで表示";
+  }
+
+  /**
+   * メッセージ欄にOK/キャンセル付きの確認を表示する。
+   * ボタンが押されると解決し、メッセージは消える。
+   */
+  showConfirm(
+    message: string,
+    okLabel: string,
+    cancelLabel: string,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.messageEl.className = "message info";
+      this.messageEl.textContent = "";
+      const text = document.createElement("div");
+      text.textContent = message;
+      const row = document.createElement("div");
+      row.className = "btn-row";
+      row.style.marginTop = "8px";
+      const ok = document.createElement("button");
+      ok.className = "btn primary";
+      ok.textContent = okLabel;
+      const cancel = document.createElement("button");
+      cancel.className = "btn";
+      cancel.textContent = cancelLabel;
+      const done = (v: boolean) => {
+        this.clearMessage();
+        resolve(v);
+      };
+      ok.addEventListener("click", () => done(true));
+      cancel.addEventListener("click", () => done(false));
+      row.append(ok, cancel);
+      this.messageEl.append(text, row);
+    });
   }
 
   showError(msg: string): void {

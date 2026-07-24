@@ -45,19 +45,60 @@ let depthEstimator: InstanceType<
   typeof import("./depth/estimator").DepthEstimator
 > | null = null;
 let depthLoading = false;
-let lastDepthVersion = 0;
+const depthLayerNames = ["behind", "bg", "front"] as const;
+const lastDepthVersions = { behind: 0, bg: 0, front: 0 };
+// パネルの調整値(モデル読み込み前の変更も、読み込み後に反映する)
+const depthSettings = { inferSize: 252, smoothing: 1 };
+
+/**
+ * 深度モデルがブラウザキャッシュ(transformers.jsのCache API)に
+ * 保存済みかどうか。保存済みならダウンロード確認は不要。
+ */
+async function isDepthModelCached(): Promise<boolean> {
+  try {
+    if (!("caches" in window)) return false;
+    const cache = await caches.open("transformers-cache");
+    const keys = await cache.keys();
+    return keys.some(
+      (req) =>
+        req.url.includes("depth-anything-v2-small") &&
+        req.url.includes(".onnx"),
+    );
+  } catch {
+    return false;
+  }
+}
 
 async function enableDepthMode(): Promise<void> {
+  if (depthEstimator || depthLoading) {
+    stage.setDisplayMode("depth");
+    return;
+  }
+
+  // 未キャッシュならダウンロード前にユーザーへ確認する
+  if (!(await isDepthModelCached())) {
+    const ok = await panel.showConfirm(
+      "AI深度には深度推定モデル「Depth Anything V2 small」(約50MB)のダウンロードが必要です。初回のみで、以後はブラウザ内にキャッシュされます。推論はブラウザ内で完結し、ゲーム画面が外部に送信されることはありません。",
+      "ダウンロードして開始",
+      "キャンセル",
+    );
+    if (!ok) {
+      stage.setLayerGap(panel.layerGap);
+      stage.setDisplayMode("layers");
+      panel.setDisplayMode("layers");
+      return;
+    }
+  }
+
   stage.setDisplayMode("depth");
-  if (depthEstimator || depthLoading) return;
   depthLoading = true;
-  panel.showInfo(
-    "AI深度モデルを準備中…(初回は数十MBのダウンロードがあります)",
-  );
+  panel.showInfo("AI深度モデルを準備中…");
   try {
     const { DepthEstimator } = await import("./depth/estimator");
     const est = new DepthEstimator();
     await est.init((msg) => panel.showInfo(msg));
+    est.setInferSize(depthSettings.inferSize);
+    est.smoothing = depthSettings.smoothing;
     depthEstimator = est;
     if (est.usingWebGPU) {
       panel.showInfo("AI深度: WebGPUで実行中です。");
@@ -70,6 +111,7 @@ async function enableDepthMode(): Promise<void> {
     panel.showError(
       `深度モデルを読み込めませんでした: ${(e as Error).message}`,
     );
+    stage.setLayerGap(panel.layerGap);
     stage.setDisplayMode("layers");
     panel.setDisplayMode("layers");
   } finally {
@@ -83,14 +125,26 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onEnterLookingGlass: () => void handleLookingGlass(),
   onDisplayMode: (mode) => {
     if (mode === "depth") {
+      stage.setLayerGap(panel.depthGap);
       void enableDepthMode();
     } else {
+      stage.setLayerGap(panel.layerGap);
       stage.setDisplayMode("layers");
       panel.clearMessage();
     }
   },
   onLayerGap: (v) => stage.setLayerGap(v),
   onDepthScale: (v) => stage.setDepthScale(v),
+  onDepthInferSize: (px) => {
+    depthSettings.inferSize = px;
+    depthEstimator?.setInferSize(px);
+  },
+  onDepthSmoothing: (v) => {
+    depthSettings.smoothing = v;
+    if (depthEstimator) {
+      depthEstimator.smoothing = v;
+    }
+  },
   onAspectMode: (mode) => {
     stage.setAspectMode(mode);
     fitCamera();
@@ -105,13 +159,14 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onResetView: () => interaction.reset(),
 });
 stage.setLayerGap(panel.initialGap);
+stage.setDepthScale(panel.initialDepthScale);
 
 async function loadRomBytes(bytes: Uint8Array, name: string): Promise<void> {
   panel.clearMessage();
   try {
     await audio.ensureStarted();
   } catch (e) {
-    console.warn("音声の初期化に失敗しました(無音で続行):", e);
+    console.warn("Audio initialization failed; continuing without sound.", e);
   }
   try {
     core.loadRom(bytes);
@@ -211,8 +266,9 @@ if (import.meta.env.DEV) {
         core.frame();
       }
       if (stage.displayMode === "depth") {
-        core.updateComposite();
-        stage.commitComposite();
+        const frames = core.updateLayers();
+        stage.commitFrame(frames);
+        depthEstimator?.submit(frames);
       } else {
         stage.commitFrame(core.updateLayers());
       }
@@ -247,13 +303,16 @@ renderer.setAnimationLoop(() => {
   }
 
   if (stage.displayMode === "depth") {
-    const comp = core.updateComposite();
-    stage.commitComposite();
+    const frames = core.updateLayers();
+    stage.commitFrame(frames);
     if (depthEstimator) {
-      depthEstimator.submit(comp.model);
-      if (depthEstimator.version !== lastDepthVersion) {
-        lastDepthVersion = depthEstimator.version;
-        stage.updateDepth(depthEstimator.depth);
+      depthEstimator.submit(frames);
+      for (const name of depthLayerNames) {
+        const layer = depthEstimator.layers[name];
+        if (layer.version !== lastDepthVersions[name]) {
+          lastDepthVersions[name] = layer.version;
+          stage.updateDepth(name, layer.depth);
+        }
       }
     }
   } else {
