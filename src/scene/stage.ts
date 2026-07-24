@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import { VISIBLE_H, VISIBLE_W, type LayerFrames } from "../emulator/core";
 
+// AI深度モードのレリーフメッシュの分割数
+const RELIEF_SEGMENTS_X = 120;
+const RELIEF_SEGMENTS_Y = 112;
+
 // NESのピクセルアスペクト比(8:7)を反映した表示プレーンのサイズ。
 // 幅 240px×8/7 : 高さ 224px
 export const PLANE_W = 1.0;
@@ -11,6 +15,9 @@ const MIN_GAP = 0.004;
 
 /** 画面比モード: TV(実機の8:7ピクセルアスペクト) / ドット等倍 */
 export type AspectMode = "tv" | "square";
+
+/** 表示モード: レイヤー分離(既定) / AI深度レリーフ */
+export type DisplayMode = "layers" | "depth";
 
 /**
  * NESのレイヤーを奥行き方向に並べた3Dシーン。
@@ -29,11 +36,22 @@ export class Stage {
   private readonly behindTex: THREE.DataTexture;
   private readonly frontTex: THREE.DataTexture;
   private readonly planes: THREE.Mesh[] = [];
+  /** レイヤー分離モードの表示物一式(モード切替でまとめて隠す) */
+  private readonly layersGroup = new THREE.Group();
   private gap = 0.1;
 
-  constructor(frames: LayerFrames) {
+  // ---- AI深度モード ----
+  private mode: DisplayMode = "layers";
+  private readonly compositeTex: THREE.DataTexture;
+  private readonly depthData: Uint8Array<ArrayBuffer>;
+  private readonly depthTex: THREE.DataTexture;
+  private readonly reliefMat: THREE.ShaderMaterial;
+  private readonly reliefMesh: THREE.Mesh;
+
+  constructor(frames: LayerFrames, compositeTexData: Uint8Array<ArrayBuffer>) {
     this.scene.add(this.root);
     this.root.add(this.screen);
+    this.screen.add(this.layersGroup);
 
     const geo = new THREE.PlaneGeometry(PLANE_W, PLANE_H);
 
@@ -54,9 +72,101 @@ export class Stage {
     // 奥→手前の順
     this.planes = [backdrop, behind, bg, front];
     for (const p of this.planes) {
-      this.screen.add(p);
+      this.layersGroup.add(p);
     }
     this.applyGap();
+
+    // ---- AI深度モード: 深度マップで頂点変位するレリーフメッシュ ----
+    this.compositeTex = this.makeTexture(compositeTexData);
+
+    this.depthData = new Uint8Array(VISIBLE_W * VISIBLE_H);
+    this.depthTex = new THREE.DataTexture(
+      this.depthData,
+      VISIBLE_W,
+      VISIBLE_H,
+      THREE.RedFormat,
+      THREE.UnsignedByteType,
+    );
+    // 変位を滑らかにするため深度は線形補間で読む
+    this.depthTex.magFilter = THREE.LinearFilter;
+    this.depthTex.minFilter = THREE.LinearFilter;
+    this.depthTex.generateMipmaps = false;
+    this.depthTex.needsUpdate = true;
+
+    this.reliefMat = new THREE.ShaderMaterial({
+      uniforms: {
+        map: { value: this.compositeTex },
+        depthMap: { value: this.depthTex },
+        depthScale: { value: 0.18 },
+      },
+      vertexShader: /* glsl */ `
+        uniform sampler2D depthMap;
+        uniform float depthScale;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          float d = texture2D(depthMap, uv).r;
+          vec3 p = vec3(position.xy, position.z + d * depthScale);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D map;
+        varying vec2 vUv;
+        void main() {
+          gl_FragColor = texture2D(map, vUv);
+          #include <colorspace_fragment>
+        }
+      `,
+      side: THREE.DoubleSide,
+    });
+    this.reliefMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(
+        PLANE_W,
+        PLANE_H,
+        RELIEF_SEGMENTS_X,
+        RELIEF_SEGMENTS_Y,
+      ),
+      this.reliefMat,
+    );
+    this.reliefMesh.visible = false;
+    this.screen.add(this.reliefMesh);
+  }
+
+  /** 表示モードを切り替える */
+  setDisplayMode(mode: DisplayMode): void {
+    this.mode = mode;
+    this.layersGroup.visible = mode === "layers";
+    this.reliefMesh.visible = mode === "depth";
+  }
+
+  get displayMode(): DisplayMode {
+    return this.mode;
+  }
+
+  /** AI深度モードの変位の強さ */
+  setDepthScale(v: number): void {
+    this.reliefMat.uniforms.depthScale.value = v;
+  }
+
+  /** 合成フレームテクスチャの更新を通知(AI深度モード) */
+  commitComposite(): void {
+    this.compositeTex.needsUpdate = true;
+  }
+
+  /**
+   * 深度マップを取り込む(行は上→下、0..1)。
+   * テクスチャのV原点に合わせて上下反転して書き込む。
+   */
+  updateDepth(depthTopDown: Float32Array): void {
+    for (let y = 0; y < VISIBLE_H; y++) {
+      const src = y * VISIBLE_W;
+      const dst = (VISIBLE_H - 1 - y) * VISIBLE_W;
+      for (let x = 0; x < VISIBLE_W; x++) {
+        this.depthData[dst + x] = (depthTopDown[src + x] * 255) | 0;
+      }
+    }
+    this.depthTex.needsUpdate = true;
   }
 
   /** 画面比を切り替える */

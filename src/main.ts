@@ -28,7 +28,7 @@ camera.position.set(0, 0, 1.7);
 
 const audio = new NesAudio();
 const core = new NesCore(audio.pushSample, NES_SAMPLE_RATE);
-const stage = new Stage(core.updateLayers());
+const stage = new Stage(core.updateLayers(), core.updateComposite().tex);
 stage.scene.background = new THREE.Color(0x05060a);
 // キャンバスはXRセッション中にLooking Glass側ウィンドウへ移動するため、
 // マウス操作はメインウィンドウに残る#appで受ける
@@ -40,11 +40,57 @@ const input = new InputManager(core.nes);
 
 let paused = false;
 
+// AI深度モード(モジュールとモデルは初回切り替え時に動的読み込み)
+let depthEstimator: InstanceType<
+  typeof import("./depth/estimator").DepthEstimator
+> | null = null;
+let depthLoading = false;
+let lastDepthVersion = 0;
+
+async function enableDepthMode(): Promise<void> {
+  stage.setDisplayMode("depth");
+  if (depthEstimator || depthLoading) return;
+  depthLoading = true;
+  panel.showInfo(
+    "AI深度モデルを準備中…(初回は数十MBのダウンロードがあります)",
+  );
+  try {
+    const { DepthEstimator } = await import("./depth/estimator");
+    const est = new DepthEstimator();
+    await est.init((msg) => panel.showInfo(msg));
+    depthEstimator = est;
+    if (est.usingWebGPU) {
+      panel.showInfo("AI深度: WebGPUで実行中です。");
+    } else {
+      panel.showInfo(
+        "AI深度: このブラウザはWebGPU非対応のためCPUで実行します(低速)。",
+      );
+    }
+  } catch (e) {
+    panel.showError(
+      `深度モデルを読み込めませんでした: ${(e as Error).message}`,
+    );
+    stage.setDisplayMode("layers");
+    panel.setDisplayMode("layers");
+  } finally {
+    depthLoading = false;
+  }
+}
+
 const panel = new Panel(document.getElementById("panel-root")!, {
   onRomFile: (file) => void loadRomFile(file),
   onDemoRom: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
   onEnterLookingGlass: () => void handleLookingGlass(),
+  onDisplayMode: (mode) => {
+    if (mode === "depth") {
+      void enableDepthMode();
+    } else {
+      stage.setDisplayMode("layers");
+      panel.clearMessage();
+    }
+  },
   onLayerGap: (v) => stage.setLayerGap(v),
+  onDepthScale: (v) => stage.setDepthScale(v),
   onAspectMode: (mode) => {
     stage.setAspectMode(mode);
     fitCamera();
@@ -154,6 +200,9 @@ if (import.meta.env.DEV) {
     camera,
     interaction,
     pinLookingGlassView,
+    get depthEstimator() {
+      return depthEstimator;
+    },
     loadDemo: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
     // rAFが止まる環境(非表示タブ等)でも手動でフレームを進められるように
     step: (n = 1) => {
@@ -161,7 +210,12 @@ if (import.meta.env.DEV) {
         input.poll();
         core.frame();
       }
-      stage.commitFrame(core.updateLayers());
+      if (stage.displayMode === "depth") {
+        core.updateComposite();
+        stage.commitComposite();
+      } else {
+        stage.commitFrame(core.updateLayers());
+      }
       renderer.render(stage.scene, camera);
     },
   };
@@ -192,7 +246,19 @@ renderer.setAnimationLoop(() => {
     if (steps === 3) acc = 0; // 追いつけないときは切り捨てる
   }
 
-  stage.commitFrame(core.updateLayers());
+  if (stage.displayMode === "depth") {
+    const comp = core.updateComposite();
+    stage.commitComposite();
+    if (depthEstimator) {
+      depthEstimator.submit(comp.model);
+      if (depthEstimator.version !== lastDepthVersion) {
+        lastDepthVersion = depthEstimator.version;
+        stage.updateDepth(depthEstimator.depth);
+      }
+    }
+  } else {
+    stage.commitFrame(core.updateLayers());
+  }
   interaction.update(dt);
 
   // XRセッション中はポリフィルが各ビューのカメラを差し替える。

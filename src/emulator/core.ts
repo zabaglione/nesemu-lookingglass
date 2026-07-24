@@ -19,6 +19,14 @@ export interface LayerFrames {
 
 export type AudioSampleCallback = (left: number, right: number) => void;
 
+/** 合成フレーム(AI深度モード用) */
+export interface CompositeFrames {
+  /** 上下反転済みRGBA(three.jsテクスチャ用) */
+  tex: Uint8Array<ArrayBuffer>;
+  /** 上→下の行順RGBA(深度モデル入力用) */
+  model: Uint8Array<ArrayBuffer>;
+}
+
 /**
  * 改造版jsnesのラッパー。ROMのロード、フレーム実行、
  * レイヤー別フレームバッファのRGBA変換を担当する。
@@ -32,6 +40,11 @@ export class NesCore {
     sprBehind: new Uint8Array(VISIBLE_W * VISIBLE_H * 4),
     sprFront: new Uint8Array(VISIBLE_W * VISIBLE_H * 4),
     backdrop: [0, 0, 0],
+  };
+
+  private readonly composite: CompositeFrames = {
+    tex: new Uint8Array(VISIBLE_W * VISIBLE_H * 4),
+    model: new Uint8Array(VISIBLE_W * VISIBLE_H * 4),
   };
 
   constructor(onAudioSample: AudioSampleCallback, sampleRate: number) {
@@ -128,5 +141,36 @@ export class NesCore {
     ];
 
     return this.frames;
+  }
+
+  /**
+   * PPUの合成済みフレーム(背景+スプライト)をRGBAへ変換する(AI深度モード用)。
+   * 返すバッファは使い回しなので呼び出し側で保持しないこと。
+   */
+  updateComposite(): CompositeFrames {
+    const buf: Uint32Array = this.nes.ppu.buffer; // 0xBBGGRR
+    const tex = this.composite.tex;
+    const model = this.composite.model;
+
+    for (let y = 0; y < VISIBLE_H; y++) {
+      const srcRow = (y + CROP_Y) << 8;
+      let to = (VISIBLE_H - 1 - y) * VISIBLE_W * 4;
+      let mo = y * VISIBLE_W * 4;
+      for (let x = 0; x < VISIBLE_W; x++, to += 4, mo += 4) {
+        const c = buf[srcRow + x + CROP_X];
+        const r = c & 0xff;
+        const g = (c >> 8) & 0xff;
+        const b = (c >> 16) & 0xff;
+        tex[to] = r;
+        tex[to + 1] = g;
+        tex[to + 2] = b;
+        tex[to + 3] = 255;
+        model[mo] = r;
+        model[mo + 1] = g;
+        model[mo + 2] = b;
+        model[mo + 3] = 255;
+      }
+    }
+    return this.composite;
   }
 }

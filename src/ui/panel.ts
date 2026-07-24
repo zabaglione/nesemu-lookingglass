@@ -1,12 +1,14 @@
 // 日本語UIパネル。DOMを組み立ててコールバックを配線する。
 
-import type { AspectMode } from "../scene/stage";
+import type { AspectMode, DisplayMode } from "../scene/stage";
 
 export interface PanelCallbacks {
   onRomFile(file: File): void;
   onDemoRom(): void;
   onEnterLookingGlass(): void;
+  onDisplayMode(mode: DisplayMode): void;
   onLayerGap(value: number): void;
+  onDepthScale(value: number): void;
   onAspectMode(mode: AspectMode): void;
   onVolume(value: number): void;
   onTogglePause(): void;
@@ -23,6 +25,7 @@ export class Panel {
   private pauseBtn!: HTMLButtonElement;
   private messageEl!: HTMLElement;
   private lkgBtn!: HTMLButtonElement;
+  private dispModeSel!: HTMLSelectElement;
 
   constructor(container: HTMLElement, cb: PanelCallbacks) {
     this.rootEl = document.createElement("div");
@@ -51,9 +54,21 @@ export class Panel {
         <div class="panel-section">
           <h3>表示</h3>
           <div class="slider-row">
+            <label for="dispmode">立体化</label>
+            <select id="dispmode">
+              <option value="layers" selected>レイヤー分離</option>
+              <option value="depth">AI深度(実験的)</option>
+            </select>
+          </div>
+          <div class="slider-row" data-id="row-gap">
             <label for="gap">層間距離</label>
             <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.1" />
             <output data-id="gap-out">0.10</output>
+          </div>
+          <div class="slider-row" data-id="row-depth" hidden>
+            <label for="dscale">深度強さ</label>
+            <input id="dscale" type="range" min="0" max="0.5" step="0.01" value="0.18" />
+            <output data-id="dscale-out">0.18</output>
           </div>
           <div class="slider-row">
             <label for="aspect">画面比</label>
@@ -144,6 +159,19 @@ export class Panel {
       cb.onAspectMode(aspect.value as AspectMode);
     });
 
+    this.dispModeSel = q<HTMLSelectElement>("#dispmode");
+    this.dispModeSel.addEventListener("change", () => {
+      this.applyDisplayModeRows();
+      cb.onDisplayMode(this.dispModeSel.value as DisplayMode);
+    });
+
+    const dscale = q<HTMLInputElement>("#dscale");
+    const dscaleOut = q('[data-id="dscale-out"]');
+    dscale.addEventListener("input", () => {
+      dscaleOut.textContent = Number(dscale.value).toFixed(2);
+      cb.onDepthScale(Number(dscale.value));
+    });
+
     const vol = q<HTMLInputElement>("#vol");
     const volOut = q('[data-id="vol-out"]');
     vol.addEventListener("input", () => {
@@ -164,6 +192,23 @@ export class Panel {
 
   get initialGap(): number {
     return 0.1;
+  }
+
+  /** モードに応じてスライダー行の表示を切り替える */
+  private applyDisplayModeRows(): void {
+    const depth = this.dispModeSel.value === "depth";
+    this.rootEl
+      .querySelector('[data-id="row-gap"]')!
+      .toggleAttribute("hidden", depth);
+    this.rootEl
+      .querySelector('[data-id="row-depth"]')!
+      .toggleAttribute("hidden", !depth);
+  }
+
+  /** 表示モードをUIに反映する(モデル読み込み失敗時の巻き戻し用) */
+  setDisplayMode(mode: DisplayMode): void {
+    this.dispModeSel.value = mode;
+    this.applyDisplayModeRows();
   }
 
   setRomInfo(name: string, mapper: number | null): void {
