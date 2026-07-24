@@ -8,9 +8,6 @@ export const VISIBLE_H = 224;
 const CROP_X = 8;
 const CROP_Y = 8;
 
-// 前面スプライトをY座標で振り分ける深度バケット数(ジオラマ表示用)
-export const SPRITE_BUCKETS = 8;
-
 /** 1フレーム分のレイヤー画像(RGBA、上下反転済み=three.jsのUV原点に合わせる) */
 export interface LayerFrames {
   bg: Uint8Array<ArrayBuffer>;
@@ -36,12 +33,6 @@ export class NesCore {
     sprFront: new Uint8Array(VISIBLE_W * VISIBLE_H * 4),
     backdrop: [0, 0, 0],
   };
-
-  /** 前面スプライトの深度バケット(奥→手前の順、RGBA) */
-  readonly spriteBuckets: Uint8Array<ArrayBuffer>[] = Array.from(
-    { length: SPRITE_BUCKETS },
-    () => new Uint8Array(VISIBLE_W * VISIBLE_H * 4),
-  );
 
   constructor(onAudioSample: AudioSampleCallback, sampleRate: number) {
     this.nes = new NES({
@@ -137,81 +128,5 @@ export class NesCore {
     ];
 
     return this.frames;
-  }
-
-  /**
-   * 前面優先度のスプライトをOAM情報から自前でラスタライズし、
-   * 画面Y座標に応じた深度バケットへ振り分ける(ジオラマ表示用)。
-   * タイル選択・反転の規則はvendor側renderSpritesPartiallyに合わせている。
-   * フレーム末尾のOAM状態を使うため、走査線単位の多重化を行うゲームでは
-   * 近似になる(通常のゲームでは問題にならない)。
-   */
-  updateSpriteBuckets(): void {
-    for (const b of this.spriteBuckets) {
-      b.fill(0);
-    }
-
-    const ppu = this.nes.ppu;
-    if (!this.romLoaded || ppu.f_spVisibility !== 1) return;
-
-    const size16 = ppu.f_spriteSize === 1;
-    const height = size16 ? 16 : 8;
-    const ptTile = ppu.ptTile;
-    const pal = ppu.sprPalette;
-
-    // 番号の大きいスプライトから描き、小さい番号の上書きで手前を表現
-    for (let i = 63; i >= 0; i--) {
-      if (ppu.bgPriority[i] === 1) continue; // 背面は既存レイヤーで表示
-      const oamY: number = ppu.sprY[i];
-      if (oamY >= 0xef) continue; // 画面外に退避されたスプライト
-      const sy = oamY + 1;
-      const sx: number = ppu.sprX[i];
-      const palAdd: number = ppu.sprCol[i];
-      const hFlip = ppu.horiFlip[i] === 1;
-      const vFlip = ppu.vertFlip[i] === 1;
-      const tile: number = ppu.sprTile[i];
-
-      // バケットはスプライト中心のY座標で決定(下ほど手前)
-      let bucket = Math.floor(
-        (((sy + height / 2 - CROP_Y) / VISIBLE_H) * SPRITE_BUCKETS) | 0,
-      );
-      bucket = Math.max(0, Math.min(SPRITE_BUCKETS - 1, bucket));
-      const out = this.spriteBuckets[bucket];
-
-      for (let row = 0; row < height; row++) {
-        const ty = sy + row - CROP_Y;
-        if (ty < 0 || ty >= VISIBLE_H) continue;
-
-        let tileIndex: number;
-        let srcRow: number;
-        if (!size16) {
-          tileIndex = ppu.f_spPatternTable === 0 ? tile : tile + 256;
-          srcRow = vFlip ? 7 - row : row;
-        } else {
-          // 8x16: タイル番号bit0がパターンテーブルを選ぶ(vendorと同一の式)
-          const topTileNum = tile & 0xfe;
-          const top = (tile & 1) !== 0 ? topTileNum - 1 + 256 : topTileNum;
-          const tileOffset = row < 8 ? (vFlip ? 1 : 0) : (vFlip ? 0 : 1);
-          tileIndex = top + tileOffset;
-          const r = row & 7;
-          srcRow = vFlip ? 7 - r : r;
-        }
-        const pix: Uint8Array = ptTile[tileIndex].pix;
-
-        const dstRowStart = (VISIBLE_H - 1 - ty) * VISIBLE_W;
-        for (let c = 0; c < 8; c++) {
-          const tx = sx + c - CROP_X;
-          if (tx < 0 || tx >= VISIBLE_W) continue;
-          const p = pix[srcRow * 8 + (hFlip ? 7 - c : c)];
-          if (p === 0) continue;
-          const color = pal[p + palAdd];
-          const o = (dstRowStart + tx) * 4;
-          out[o] = color & 0xff;
-          out[o + 1] = (color >> 8) & 0xff;
-          out[o + 2] = (color >> 16) & 0xff;
-          out[o + 3] = 255;
-        }
-      }
-    }
   }
 }

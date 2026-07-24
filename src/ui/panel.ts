@@ -7,8 +7,6 @@ export interface PanelCallbacks {
   onDemoRom(): void;
   onEnterLookingGlass(): void;
   onLayerGap(value: number): void;
-  onSpriteDepth(value: number): void;
-  onThickness(value: number): void;
   onAspectMode(mode: AspectMode): void;
   onVolume(value: number): void;
   onTogglePause(): void;
@@ -56,16 +54,6 @@ export class Panel {
             <label for="gap">層間距離</label>
             <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.1" />
             <output data-id="gap-out">0.10</output>
-          </div>
-          <div class="slider-row">
-            <label for="sprdepth">SPR奥行き</label>
-            <input id="sprdepth" type="range" min="0" max="0.25" step="0.005" value="0.08" />
-            <output data-id="sprdepth-out">0.08</output>
-          </div>
-          <div class="slider-row">
-            <label for="thick">厚み</label>
-            <input id="thick" type="range" min="0" max="0.04" step="0.002" value="0.012" />
-            <output data-id="thick-out">0.012</output>
           </div>
           <div class="slider-row">
             <label for="aspect">画面比</label>
@@ -149,20 +137,6 @@ export class Panel {
     gap.addEventListener("input", () => {
       gapOut.textContent = Number(gap.value).toFixed(2);
       cb.onLayerGap(Number(gap.value));
-    });
-
-    const sprDepth = q<HTMLInputElement>("#sprdepth");
-    const sprDepthOut = q('[data-id="sprdepth-out"]');
-    sprDepth.addEventListener("input", () => {
-      sprDepthOut.textContent = Number(sprDepth.value).toFixed(2);
-      cb.onSpriteDepth(Number(sprDepth.value));
-    });
-
-    const thick = q<HTMLInputElement>("#thick");
-    const thickOut = q('[data-id="thick-out"]');
-    thick.addEventListener("input", () => {
-      thickOut.textContent = Number(thick.value).toFixed(3);
-      cb.onThickness(Number(thick.value));
     });
 
     const aspect = q<HTMLSelectElement>("#aspect");

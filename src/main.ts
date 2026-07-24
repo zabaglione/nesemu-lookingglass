@@ -28,7 +28,7 @@ camera.position.set(0, 0, 1.7);
 
 const audio = new NesAudio();
 const core = new NesCore(audio.pushSample, NES_SAMPLE_RATE);
-const stage = new Stage(core.updateLayers(), core.spriteBuckets);
+const stage = new Stage(core.updateLayers());
 stage.scene.background = new THREE.Color(0x05060a);
 // キャンバスはXRセッション中にLooking Glass側ウィンドウへ移動するため、
 // マウス操作はメインウィンドウに残る#appで受ける
@@ -45,8 +45,6 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onDemoRom: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
   onEnterLookingGlass: () => void handleLookingGlass(),
   onLayerGap: (v) => stage.setLayerGap(v),
-  onSpriteDepth: (v) => stage.setSpriteSpread(v),
-  onThickness: (v) => stage.setThickness(v),
   onAspectMode: (mode) => {
     stage.setAspectMode(mode);
     fitCamera();
@@ -163,7 +161,6 @@ if (import.meta.env.DEV) {
         input.poll();
         core.frame();
       }
-      core.updateSpriteBuckets();
       stage.commitFrame(core.updateLayers());
       renderer.render(stage.scene, camera);
     },
@@ -195,7 +192,6 @@ renderer.setAnimationLoop(() => {
     if (steps === 3) acc = 0; // 追いつけないときは切り捨てる
   }
 
-  core.updateSpriteBuckets();
   stage.commitFrame(core.updateLayers());
   interaction.update(dt);
 
