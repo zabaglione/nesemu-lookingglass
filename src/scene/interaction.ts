@@ -9,7 +9,12 @@ const SMOOTHING = 12; // 大きいほどキビキビ動く
 /**
  * シーンルートのGroupをマウスで操作する。
  * カメラではなくGroupを動かすことで、Looking Glass(WebXR)表示中も
- * デスクトップ側ウィンドウから同じ操作ができる。
+ * 同じ操作が効く。
+ *
+ * リスナーはキャンバスではなく#app(メインウィンドウ側に常に残る要素)に
+ * 付ける。XRセッション中はポリフィルがキャンバス自体をLooking Glass側の
+ * ポップアップへ移動するため、キャンバスに付けるとメインウィンドウから
+ * 操作できなくなる。パネルUI上で始まったイベントは無視する。
  *
  * 左ドラッグ: 回転 / ホイール: 拡大縮小 /
  * 右ドラッグ(またはShift+ドラッグ): 平行移動 / ダブルクリック: リセット
@@ -30,13 +35,22 @@ export class SceneInteraction {
     private readonly root: THREE.Group,
     dom: HTMLElement,
   ) {
+    // パネルUIなど操作対象外の要素で始まったイベントか
+    const onUi = (e: Event): boolean =>
+      e.target instanceof Element && e.target.closest(".panel") !== null;
+
     dom.addEventListener("pointerdown", (e) => {
+      if (onUi(e)) return;
       if (e.button !== 0 && e.button !== 2) return;
       this.pointerId = e.pointerId;
       this.panning = e.button === 2 || e.shiftKey;
       this.lastX = e.clientX;
       this.lastY = e.clientY;
-      dom.setPointerCapture(e.pointerId);
+      try {
+        dom.setPointerCapture(e.pointerId);
+      } catch {
+        /* キャプチャできなくてもドラッグ自体は継続できる */
+      }
     });
 
     dom.addEventListener("pointermove", (e) => {
@@ -69,6 +83,7 @@ export class SceneInteraction {
     dom.addEventListener(
       "wheel",
       (e) => {
+        if (onUi(e)) return; // パネル上はスクロールに使う
         e.preventDefault();
         this.targetScale *= Math.exp(-e.deltaY * ZOOM_SPEED);
         this.targetScale = Math.max(0.25, Math.min(6, this.targetScale));
@@ -76,8 +91,14 @@ export class SceneInteraction {
       { passive: false },
     );
 
-    dom.addEventListener("dblclick", () => this.reset());
-    dom.addEventListener("contextmenu", (e) => e.preventDefault());
+    dom.addEventListener("dblclick", (e) => {
+      if (onUi(e)) return;
+      this.reset();
+    });
+    dom.addEventListener("contextmenu", (e) => {
+      if (onUi(e)) return;
+      e.preventDefault();
+    });
   }
 
   reset(): void {

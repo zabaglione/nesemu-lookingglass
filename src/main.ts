@@ -26,7 +26,12 @@ const audio = new NesAudio();
 const core = new NesCore(audio.pushSample, NES_SAMPLE_RATE);
 const stage = new Stage(core.updateLayers());
 stage.scene.background = new THREE.Color(0x05060a);
-const interaction = new SceneInteraction(stage.root, canvas);
+// キャンバスはXRセッション中にLooking Glass側ウィンドウへ移動するため、
+// マウス操作はメインウィンドウに残る#appで受ける
+const interaction = new SceneInteraction(
+  stage.root,
+  document.getElementById("app")!,
+);
 const input = new InputManager(core.nes);
 
 let paused = false;
@@ -143,6 +148,7 @@ if (import.meta.env.DEV) {
     stage,
     renderer,
     camera,
+    interaction,
     loadDemo: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
     // rAFが止まる環境(非表示タブ等)でも手動でフレームを進められるように
     step: (n = 1) => {
