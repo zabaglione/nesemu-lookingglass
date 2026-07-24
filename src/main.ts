@@ -5,16 +5,20 @@ import { NesCore } from "./emulator/core";
 import { InputManager } from "./emulator/input";
 import { buildTestRom } from "./emulator/testRom";
 import { SceneInteraction } from "./scene/interaction";
-import { initLookingGlass, toggleLookingGlass } from "./scene/lookingglass";
+import {
+  initLookingGlass,
+  pinLookingGlassView,
+  toggleLookingGlass,
+} from "./scene/lookingglass";
 import { Stage } from "./scene/stage";
 import { Panel } from "./ui/panel";
 
 const FRAME_MS = 1000 / 60.0988; // NTSC NESのフレームレート
 
-// navigator.xrを置き換えるため、レンダラー生成より先に初期化する
-initLookingGlass();
-
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
+
+// navigator.xrを置き換えるため、レンダラー生成より先に初期化する
+initLookingGlass(canvas);
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.xr.enabled = true;
@@ -149,6 +153,7 @@ if (import.meta.env.DEV) {
     renderer,
     camera,
     interaction,
+    pinLookingGlassView,
     loadDemo: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
     // rAFが止まる環境(非表示タブ等)でも手動でフレームを進められるように
     step: (n = 1) => {
@@ -190,7 +195,11 @@ renderer.setAnimationLoop(() => {
   stage.commitFrame(core.updateLayers());
   interaction.update(dt);
 
-  // XRセッション中はポリフィルが各ビューのカメラを差し替える
+  // XRセッション中はポリフィルが各ビューのカメラを差し替える。
+  // ホログラムカメラ設定はポリフィル内蔵コントロールに動かされないよう固定
+  if (renderer.xr.isPresenting) {
+    pinLookingGlassView();
+  }
   renderer.render(stage.scene, camera);
 
   if (now - fpsWindowStart >= 1000) {

@@ -10,7 +10,7 @@ import type * as THREE from "three";
 
 let polyfill: LookingGlassWebXRPolyfill | null = null;
 
-export function initLookingGlass(): void {
+export function initLookingGlass(appCanvas: HTMLCanvasElement): void {
   if (polyfill) return;
   polyfill = new LookingGlassWebXRPolyfill({
     // シーンは原点中心・幅約1のNES画面なので、カメラ焦点を原点に置く
@@ -21,6 +21,40 @@ export function initLookingGlass(): void {
     fovy: (14 * Math.PI) / 180,
   });
   patchDeviceAnimationFrame();
+  suppressPolyfillCanvasControls(appCanvas);
+}
+
+/**
+ * ポリフィルはセッション開始時、アプリのキャンバスに独自の
+ * トラックボール操作(mousemove: ホログラムカメラ回転 / wheel: ズーム)を
+ * 登録する。これが本アプリのドラッグ操作と競合し、さらに設定変更のたびに
+ * quilt用フレームバッファが再確保されて表示が乱れる。
+ * 操作体系はアプリ側(シーンGroupの回転/拡縮)に統一するため、
+ * 先に停止リスナーを登録して無効化する(同一要素のリスナーは登録順に
+ * 実行されるので、セッション開始前に登録しておけば必ず先行できる)。
+ */
+function suppressPolyfillCanvasControls(appCanvas: HTMLCanvasElement): void {
+  const stop = (e: Event) => e.stopImmediatePropagation();
+  appCanvas.addEventListener("mousemove", stop);
+  appCanvas.addEventListener("wheel", stop);
+}
+
+/**
+ * ポリフィル内蔵のコントロール類でホログラムカメラ設定が動かされても、
+ * 毎フレーム既定値へ戻す(視点操作はシーンGroup側で行う方針のため)。
+ * 値が変わったときだけ書き戻す: 設定のsetterはon-config-changedを発火し
+ * フレームバッファ再確保を伴うので、無条件書き込みは避ける。
+ */
+export function pinLookingGlassView(): void {
+  const c = LookingGlassConfig;
+  if (c.trackballX !== 0) c.trackballX = 0;
+  if (c.trackballY !== 0) c.trackballY = 0;
+  if (c.targetX !== 0) c.targetX = 0;
+  if (c.targetY !== 0) c.targetY = 0;
+  if (c.targetZ !== 0) c.targetZ = 0;
+  // 1 = Center(単一ビュー)。メインウィンドウ側の表示が
+  // Quilt(タイル一覧)に切り替わってしまうのを防ぐ
+  if (c.inlineView !== 1) c.inlineView = 1;
 }
 
 /**

@@ -80,6 +80,8 @@ export class SceneInteraction {
     dom.addEventListener("pointerup", release);
     dom.addEventListener("pointercancel", release);
 
+    // capture段階で処理する: キャンバス自体に付くポリフィル製wheelハンドラを
+    // 停止リスナーで無効化しているため、バブリングでは届かない
     dom.addEventListener(
       "wheel",
       (e) => {
@@ -88,7 +90,7 @@ export class SceneInteraction {
         this.targetScale *= Math.exp(-e.deltaY * ZOOM_SPEED);
         this.targetScale = Math.max(0.25, Math.min(6, this.targetScale));
       },
-      { passive: false },
+      { passive: false, capture: true },
     );
 
     dom.addEventListener("dblclick", (e) => {

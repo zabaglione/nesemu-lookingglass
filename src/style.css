@@ -248,6 +248,12 @@ button.btn.lkg {
   color: #a8c8ff;
 }
 
+/* Looking Glassポリフィルが注入するデバッグ用コントロールパネルは
+   本アプリの操作体系と競合するため非表示にする */
+#LookingGlassWebXRControls {
+  display: none !important;
+}
+
 /* ドラッグ&ドロップ時のオーバーレイ */
 #drop-overlay {
   position: absolute;
