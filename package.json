@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test:mapper23": "node --test tests/mapper23.test.mjs"
+    "test": "node --test tests/mapper23.test.mjs tests/mappers.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
