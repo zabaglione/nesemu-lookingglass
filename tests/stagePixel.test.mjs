@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
 const threeUrl = pathToFileURL(path.resolve("node_modules/three/build/three.module.js")).href;
+const THREE = await import(threeUrl);
 const compile = (file, replacements = []) => {
   let source = fs.readFileSync(file, "utf8").replaceAll('from "three"', `from "${threeUrl}"`);
   for (const [from, to] of replacements) source = source.replace(from, to);
@@ -41,6 +42,19 @@ test("Stage pixel mode reuses geometry and restores requested thickness", () => 
   assert.equal(background.side.geometry.getAttribute("position").version, version);
   stage.commitFrame(frames);
   assert.ok(background.group.visible);
+});
+
+test("Stage keeps the background front on the focal plane for every gap and depth scale", () => {
+  for (const gap of [0, 0.004, 0.09, 0.3]) {
+    for (const scale of [0.5, 1.35, 2]) {
+      const stage = new Stage(frames);
+      stage.setLayerGap(gap);
+      stage.setDepthScale(scale);
+      stage.scene.updateMatrixWorld(true);
+      const position = stage.bg.front.getWorldPosition(new THREE.Vector3());
+      assert.ok(Math.abs(position.z) < 1e-9, `gap=${gap} scale=${scale} z=${position.z}`);
+    }
+  }
 });
 
 test("pixel thickness stays between every visible layer at all gaps and depths", () => {

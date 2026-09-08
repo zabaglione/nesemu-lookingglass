@@ -5,6 +5,8 @@ import { PixelExtrusionBuffer, pixelMaskHash } from "./pixelExtrusion";
 export const PLANE_W = 1;
 export const PLANE_H = (VISIBLE_H * 7) / (VISIBLE_W * 8);
 const MIN_GAP = 0.004;
+export const DEFAULT_LAYER_GAP = 0.09;
+export const DEFAULT_DEPTH_SCALE = 1.35;
 export type AspectMode = "tv" | "square";
 
 type PixelLayer = {
@@ -31,7 +33,8 @@ export class Stage {
   private readonly bgTexture: THREE.DataTexture;
   private readonly bg: PixelLayer;
   private readonly sprites: PixelLayer[];
-  private gap = 0.04;
+  private gap = DEFAULT_LAYER_GAP;
+  private depthScale = DEFAULT_DEPTH_SCALE;
   private spriteDepthSpread = 0.8;
   private bgThickness = 0.06;
   private spriteThickness = 0.035;
@@ -40,9 +43,11 @@ export class Stage {
     this.scene.add(this.root);
     this.root.add(this.screen);
     this.screen.add(this.pixelGroup);
+    this.pixelGroup.scale.z = this.depthScale;
     const plane = new THREE.PlaneGeometry(PLANE_W, PLANE_H);
     const backdropMat = new THREE.MeshBasicMaterial({ color: 0, side: THREE.DoubleSide });
     this.backdrop = new THREE.Mesh(plane, backdropMat);
+    this.backdrop.frustumCulled = false;
     this.bgTexture = this.makeTexture(frames.bg);
     this.bg = this.makePixelLayer(this.bgTexture, frames.bg, "front", 0.5, this.bgThickness);
     this.sprites = frames.spriteGroups.map((group) =>
@@ -59,6 +64,12 @@ export class Stage {
   get screenWidth(): number { return PLANE_W * this.screen.scale.x; }
   get screenHeight(): number { return PLANE_H; }
   setLayerGap(value: number): void { this.gap = value; this.applyGap(); }
+  setDepthScale(value: number): void {
+    this.depthScale = Math.max(0.5, Math.min(2, value));
+    this.pixelGroup.scale.z = this.depthScale;
+    this.applyGap();
+  }
+  get currentDepthScale(): number { return this.depthScale; }
   setSpriteDepthSpread(value: number): void { this.spriteDepthSpread = Math.max(0, Math.min(1.5, value)); this.applyGap(); }
   setPixelBackgroundThickness(value: number): void { this.bgThickness = Math.max(0, Math.min(0.3, value)); this.bg.desiredThickness = this.bgThickness; this.applyGap(); }
   setPixelSpriteThickness(value: number): void { this.spriteThickness = Math.max(0, Math.min(0.3, value)); for (const layer of this.sprites) layer.desiredThickness = this.spriteThickness; this.applyGap(); }
@@ -83,6 +94,7 @@ export class Stage {
 
   private applyGap(): void {
     const g = Math.max(this.gap, MIN_GAP);
+    this.pixelGroup.position.z = -0.5 * g * this.depthScale;
     this.backdrop.position.z = -1.5 * g;
     this.bg.group.position.z = 0.5 * g;
     const margin = Math.max(MIN_GAP * 0.25, g * 0.02);
@@ -121,6 +133,11 @@ export class Stage {
     const extrusion = new PixelExtrusionBuffer({ width: VISIBLE_W, height: VISIBLE_H, planeWidth: PLANE_W, planeHeight: PLANE_H });
     extrusion.update(rgba);
     const side = new THREE.Mesh(extrusion.geometry, new THREE.MeshBasicMaterial({ map: texture, alphaTest: 0.5, side: THREE.DoubleSide }));
+    // Three.js XR culling uses the first view's frustum. Keep every pixel
+    // layer available to the full quilt so edge views cannot lose geometry.
+    front.frustumCulled = false;
+    back.frustumCulled = false;
+    side.frustumCulled = false;
     const group = new THREE.Group();
     group.add(back, side, front);
     side.scale.z = thickness;

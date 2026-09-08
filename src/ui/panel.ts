@@ -9,6 +9,7 @@ export interface PanelCallbacks {
   onPixelBackgroundThickness(value: number): void;
   onPixelSpriteThickness(value: number): void;
   onLayerGap(value: number): void;
+  onDepthScale(value: number): void;
   onSpriteGroupMargin(value: number): void;
   onSpriteGroupLimit(value: number): void;
   onSpriteDepthSpread(value: number): void;
@@ -30,6 +31,7 @@ export class Panel {
   private messageEl!: HTMLElement;
   private lkgBtn!: HTMLButtonElement;
   private spriteGroupsEl!: HTMLElement;
+  private lkgDiagnosticsEl!: HTMLElement;
   private lastSpriteGroupCount: number | null = null;
 
   constructor(container: HTMLElement, cb: PanelCallbacks) {
@@ -66,8 +68,8 @@ export class Panel {
           <div data-id="layer-rows">
             <div class="slider-row" data-id="layer-gap-row">
               <label for="gap">層間距離</label>
-              <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.04" />
-              <output data-id="gap-out">0.04</output>
+              <input id="gap" type="range" min="0" max="0.3" step="0.005" value="0.09" />
+              <output data-id="gap-out">0.09</output>
             </div>
             <div class="slider-row">
               <label for="spr-margin">結合距離</label>
@@ -104,6 +106,11 @@ export class Panel {
             </div>
           </div>
           <div class="slider-row">
+            <label for="depth-scale">立体感</label>
+            <input id="depth-scale" type="range" min="0.5" max="2" step="0.05" value="1.35" />
+            <output data-id="depth-scale-out">1.35</output>
+          </div>
+          <div class="slider-row">
             <label for="aspect">画面比</label>
             <select id="aspect">
               <option value="tv" selected>TV(4:3相当)</option>
@@ -127,8 +134,10 @@ export class Panel {
           <button class="btn lkg" data-id="lkg">Looking Glassで表示</button>
           <div class="status-line" style="white-space: normal; margin-top: 6px">
             要 <b>Looking Glass Bridge</b>(起動済み)+ Chromium系ブラウザ。
-            開いたウィンドウをLooking Glass側へ移動して全画面化してください。
+            開いた<b>出力ウィンドウ</b>をLooking Glass側へ移動して全画面化してください。
+            この操作画面は2Dプレビューです。
           </div>
+          <div class="status-line" data-id="lkg-diagnostics" style="white-space: normal">校正情報: 未取得</div>
         </div>
 
         <div class="panel-section">
@@ -163,6 +172,7 @@ export class Panel {
     this.messageEl = q('[data-id="message"]');
     this.lkgBtn = q<HTMLButtonElement>('[data-id="lkg"]');
     this.spriteGroupsEl = q('[data-id="sprite-groups"]');
+    this.lkgDiagnosticsEl = q('[data-id="lkg-diagnostics"]');
 
     const fileInput = q<HTMLInputElement>('[data-id="file"]');
     q('[data-id="open"]').addEventListener("click", () => fileInput.click());
@@ -194,6 +204,14 @@ export class Panel {
     spriteMargin.addEventListener("input", () => {
       spriteMarginOut.textContent = `${Number(spriteMargin.value)}px`;
       cb.onSpriteGroupMargin(Number(spriteMargin.value));
+    });
+
+    const depthScale = q<HTMLInputElement>("#depth-scale");
+    const depthScaleOut = q('[data-id="depth-scale-out"]');
+    depthScale.addEventListener("input", () => {
+      const value = Number(depthScale.value);
+      depthScaleOut.textContent = value.toFixed(2);
+      cb.onDepthScale(value);
     });
 
     const spriteLimit = q<HTMLSelectElement>("#spr-limit");
@@ -251,6 +269,12 @@ export class Panel {
   get layerGap(): number {
     return Number(
       this.rootEl.querySelector<HTMLInputElement>("#gap")!.value,
+    );
+  }
+
+  get depthScale(): number {
+    return Number(
+      this.rootEl.querySelector<HTMLInputElement>("#depth-scale")!.value,
     );
   }
 
@@ -315,6 +339,10 @@ export class Panel {
     this.lkgBtn.textContent = active
       ? "Looking Glass表示を終了"
       : "Looking Glassで表示";
+  }
+
+  setLkgDiagnostics(text: string): void {
+    this.lkgDiagnosticsEl.textContent = text;
   }
 
   showError(msg: string): void {

@@ -2,7 +2,17 @@ import {
   LookingGlassConfig,
   LookingGlassWebXRPolyfill,
 } from "@lookingglass/webxr";
-import type * as THREE from "three";
+import * as THREE from "three";
+import { fitTargetDiam } from "./stereoMath";
+import {
+  canvasCssSize,
+  chooseLookingGlassScreen,
+  getLookingGlassScreens,
+  getCachedLookingGlassScreens,
+  placeOutputWindow,
+  prefetchLookingGlassScreens,
+  pixelExactStatus,
+} from "./lookingglassOutput";
 
 // Looking Glass WebXRポリフィルの初期化。
 // navigator.xrを置き換えるため、three.jsのレンダラー生成前に呼ぶこと。
@@ -47,12 +57,18 @@ type LookingGlassInternals = {
   calibration?: {
     screenW?: { value?: number };
     screenH?: { value?: number };
+    serial?: string;
   };
 };
+
+let sceneWidth = 1;
+let sceneHeight = 0.8166666667;
+const SCENE_FIT_MARGIN = 1.15;
 
 type LayerPrivateState = {
   LookingGlassEnabled: boolean;
   blitTextureToDefaultFramebufferIfNeeded: () => void;
+  moveCanvasToWindow?: (show: boolean, onClose?: () => void) => void;
 };
 
 export type LookingGlassRecoveryStatus =
@@ -125,12 +141,126 @@ function createLookingGlassPolyfill(): LookingGlassWebXRPolyfill {
       targetX: 0,
       targetY: 0,
       targetZ: 0,
-      targetDiam: 1.6,
+      // This is replaced after the scene bounds and device calibration are
+      // known. Keeping it close to the scene height avoids losing parallax
+      // on displays whose calibrated aspect ratio is wider than the scene.
+      targetDiam: Math.max(sceneHeight, sceneWidth / (16 / 9)) * SCENE_FIT_MARGIN,
       fovy: (14 * Math.PI) / 180,
+      depthiness: 1.25,
     });
   } finally {
     console.warn = originalWarn;
   }
+}
+
+function fitLookingGlassTargetDiam(): void {
+  const config = LookingGlassConfig as unknown as LookingGlassInternals & {
+    targetDiam?: number;
+  };
+  const calibration = config.calibration;
+  const screenW = calibration?.screenW?.value;
+  const screenH = calibration?.screenH?.value;
+  const aspect =
+    typeof screenW === "number" && screenW > 0 && typeof screenH === "number" && screenH > 0
+      ? screenW / screenH
+      : 16 / 9;
+  const targetDiam = fitTargetDiam(sceneWidth, sceneHeight, aspect, 1, SCENE_FIT_MARGIN);
+  if (typeof config.targetDiam === "number" && Math.abs(config.targetDiam - targetDiam) < 1e-4) return;
+  if (typeof config.targetDiam === "number") config.targetDiam = targetDiam;
+}
+
+export function setLookingGlassSceneBounds(width: number, height: number): void {
+  if (!(width > 0) || !(height > 0)) return;
+  sceneWidth = width;
+  sceneHeight = height;
+  fitLookingGlassTargetDiam();
+}
+
+export type LookingGlassDisplaySnapshot = {
+  calibrated: boolean;
+  screenWidth: number;
+  screenHeight: number;
+  viewCount: number;
+  popupOpen: boolean;
+  actualViewCount: number;
+  viewPositionSpan: number;
+  frontDisparity: number;
+  backDisparity: number;
+  fullscreen: boolean;
+  pixelExact: boolean;
+  pixelWidth: number;
+  pixelHeight: number;
+  targetMatched: boolean | null;
+};
+
+/** Read-only diagnostics from the active XR ArrayCamera and device output. */
+export function getLookingGlassDisplaySnapshot(
+  renderer: THREE.WebGLRenderer,
+  baseCamera?: THREE.Camera,
+): LookingGlassDisplaySnapshot {
+  const config = LookingGlassConfig as unknown as LookingGlassInternals & {
+    numViews?: number;
+  };
+  const calibration = config.calibration;
+  const screenWidth = calibration?.screenW?.value ?? 0;
+  const screenHeight = calibration?.screenH?.value ?? 0;
+  const calibrated =
+    Boolean(calibration?.serial) && screenWidth > 0 && screenHeight > 0;
+  const popup = config.popup;
+  const result: LookingGlassDisplaySnapshot = {
+    calibrated,
+    screenWidth,
+    screenHeight,
+    viewCount: config.numViews ?? 0,
+    popupOpen: Boolean(popup && !popup.closed),
+    actualViewCount: 0,
+    viewPositionSpan: 0,
+    frontDisparity: 0,
+    backDisparity: 0,
+    fullscreen: false,
+    pixelExact: false,
+    pixelWidth: 0,
+    pixelHeight: 0,
+    targetMatched: null,
+  };
+  if (!renderer.xr.isPresenting || !baseCamera) return result;
+  const xrCamera = (renderer.xr as unknown as { getCamera(camera?: THREE.Camera): THREE.ArrayCamera }).getCamera(baseCamera);
+  const views = xrCamera.cameras ?? [];
+  result.actualViewCount = views.length;
+  if (views.length < 2) return result;
+  const first = views[0];
+  const last = views[views.length - 1];
+  result.viewPositionSpan = Math.abs(
+    new THREE.Vector3().setFromMatrixPosition(first.matrixWorld).x -
+      new THREE.Vector3().setFromMatrixPosition(last.matrixWorld).x,
+  );
+  const project = (view: THREE.Camera, z: number): number => {
+    const p = new THREE.Vector4(0, 0, z, 1)
+      .applyMatrix4(view.matrixWorldInverse)
+      .applyMatrix4(view.projectionMatrix);
+    return p.w === 0 ? 0 : p.x / p.w;
+  };
+  result.frontDisparity = project(first, 0.1) - project(last, 0.1);
+  result.backDisparity = project(first, -0.1) - project(last, -0.1);
+  const doc = popup?.document;
+  const fullscreen = Boolean(doc?.fullscreenElement);
+  const pixel = pixelExactStatus(
+    popup?.innerWidth ?? 0,
+    popup?.innerHeight ?? 0,
+    popup?.devicePixelRatio ?? 1,
+    screenWidth,
+    screenHeight,
+    fullscreen,
+  );
+  result.fullscreen = fullscreen;
+  result.pixelExact = pixel.pixelExact;
+  result.pixelWidth = Math.round((popup?.innerWidth ?? 0) * (popup?.devicePixelRatio ?? 1));
+  result.pixelHeight = Math.round((popup?.innerHeight ?? 0) * (popup?.devicePixelRatio ?? 1));
+  const selected = popup ? outputControllers.get(popup)?.selectedScreen : null;
+  result.targetMatched = selected
+    ? Math.round(popup?.screenX ?? 0) === Math.round(selected.left) && Math.round(popup?.screenY ?? 0) === Math.round(selected.top)
+    : null;
+  return result;
 }
 
 export function initLookingGlass(appCanvas: HTMLCanvasElement): void {
@@ -150,6 +280,7 @@ export function initLookingGlass(appCanvas: HTMLCanvasElement): void {
   // セッション開始時にも必ず再試行する。
   ensureDeviceAnimationFramePatched();
   suppressPolyfillCanvasControls(appCanvas);
+  prefetchLookingGlassScreens();
 }
 
 /**
@@ -344,6 +475,20 @@ export function pinLookingGlassView(): void {
 }
 
 const preparedOutputCanvases = new WeakSet<HTMLCanvasElement>();
+type OutputController = {
+  selectedScreen: { left: number; top: number; width: number; height: number } | null;
+  refresh: () => void;
+  requestFullscreen: () => Promise<boolean>;
+  dispose: () => void;
+  resizeHandler: () => void;
+  fullscreenHandler: () => void;
+  disposed: boolean;
+};
+const outputControllers = new WeakMap<Window, OutputController>();
+
+function outputFullscreenOptions(screen: OutputController["selectedScreen"]): unknown {
+  return screen ? { screen, navigationUI: "hide" } : { navigationUI: "hide" };
+}
 
 /**
  * 全画面対象をcanvas単体ではなく出力ウィンドウ全体にする。
@@ -360,9 +505,10 @@ function prepareOutputCanvas(canvas: HTMLCanvasElement): void {
       event.stopImmediatePropagation();
       const doc = canvas.ownerDocument;
       if (doc.fullscreenElement) return;
-      void doc.documentElement.requestFullscreen().catch(() => {
-        void canvas.requestFullscreen().catch(() => undefined);
-      });
+      const popup = (LookingGlassConfig as unknown as LookingGlassInternals).popup;
+      const controller = popup ? outputControllers.get(popup) : undefined;
+      if (controller) void controller.requestFullscreen();
+      else void doc.documentElement.requestFullscreen().catch(() => undefined);
     },
     true,
   );
@@ -378,12 +524,19 @@ function mountOutputCanvas(): void {
   const popup = config.popup;
   const canvas = config.lkgCanvas;
   if (!popup || popup.closed || !canvas) return;
+  fitLookingGlassTargetDiam();
 
   const width = config.calibration?.screenW?.value;
   const height = config.calibration?.screenH?.value;
   canvas.style.position = "fixed";
-  canvas.style.bottom = "0";
+  canvas.style.top = "0";
+  canvas.style.bottom = "auto";
   canvas.style.left = "0";
+  const dpr = popup.devicePixelRatio > 0 ? popup.devicePixelRatio : 1;
+  const css = canvasCssSize(width ?? canvas.width, height ?? canvas.height, dpr);
+  canvas.style.width = `${css.width}px`;
+  canvas.style.height = `${css.height}px`;
+  canvas.style.display = "block";
   if (typeof width === "number" && width > 0 && canvas.width !== width) {
     canvas.width = width;
   }
@@ -392,11 +545,121 @@ function mountOutputCanvas(): void {
   }
 
   const body = popup.document.body;
+  body.style.margin = "0";
+  body.style.overflow = "hidden";
   for (const oldCanvas of Array.from(body.querySelectorAll("canvas"))) {
     if (oldCanvas !== canvas) oldCanvas.remove();
   }
   if (canvas.parentElement !== body) body.appendChild(canvas);
   prepareOutputCanvas(canvas);
+  outputControllers.get(popup)?.refresh();
+}
+
+function hasLookingGlassCalibration(): boolean {
+  const calibration = (LookingGlassConfig as unknown as LookingGlassInternals).calibration;
+  return Boolean(
+    calibration?.serial &&
+      (calibration.screenW?.value ?? 0) > 0 &&
+      (calibration.screenH?.value ?? 0) > 0,
+  );
+}
+
+function openLookingGlassOutputWindow(): Window {
+  const config = LookingGlassConfig as unknown as LookingGlassInternals;
+  const calibrationWidth = config.calibration?.screenW?.value ?? 640;
+  const calibrationHeight = config.calibration?.screenH?.value ?? 360;
+  const screens = getCachedLookingGlassScreens();
+  let selected = chooseLookingGlassScreen(screens ?? [], calibrationWidth, calibrationHeight, window.devicePixelRatio || 1);
+  const features = selected
+    ? `popup,fullscreen,left=${selected.left},top=${selected.top},width=${selected.width},height=${selected.height}`
+    : "popup,width=640,height=360";
+  const popup = window.open("", "looking-glass-output", features);
+  if (!popup) throw new Error("Looking Glass出力ウィンドウを開けませんでした。ポップアップを許可してください。");
+  if (selected) placeOutputWindow(popup, selected);
+  const controller: OutputController = {
+    selectedScreen: selected,
+    disposed: false,
+    resizeHandler: () => undefined,
+    fullscreenHandler: () => undefined,
+    requestFullscreen: async () => {
+      if (controller.disposed || popup.closed) return false;
+      const request = popup.document.documentElement.requestFullscreen as ((options?: unknown) => Promise<void>) | undefined;
+      if (!request) return false;
+      try {
+        await request.call(popup.document.documentElement, outputFullscreenOptions(controller.selectedScreen));
+        return true;
+      } catch {
+        status.textContent = "自動全画面を開始できません。出力ウィンドウ内の全画面表示ボタンをクリックしてください。";
+        return false;
+      }
+    },
+    refresh: () => {
+      if (controller.disposed || popup.closed) return;
+      const fullscreen = Boolean(popup.document.fullscreenElement);
+      const exact = fullscreen && Math.round(popup.innerWidth * (popup.devicePixelRatio || 1)) === calibrationWidth && Math.round(popup.innerHeight * (popup.devicePixelRatio || 1)) === calibrationHeight;
+      const targetMatched = controller.selectedScreen
+        ? popup.screenX === controller.selectedScreen.left && popup.screenY === controller.selectedScreen.top
+        : null;
+      const ready = exact && targetMatched !== false;
+      button.style.display = ready ? "none" : "block";
+      status.style.display = ready ? "none" : "block";
+      if (!fullscreen && !controller.selectedScreen) status.textContent = "Looking Glass画面を自動検出できません。出力をLooking Glass側へ移動し「全画面表示」を押してください。";
+      else if (!fullscreen) status.textContent = "最大化ではなく枠なしの全画面表示を使用してください。";
+      else if (!exact) status.textContent = "全画面サイズが校正値と異なります。Looking Glass側のOS解像度を確認してください。";
+      else if (targetMatched === false) status.textContent = "選択したLooking Glass画面と表示先が一致しません。出力ウィンドウを手動配置してください。";
+      else if (targetMatched === null) status.textContent = "表示先を確認できません。Looking Glass側の画面へ手動配置してください。";
+    },
+    dispose: () => {
+      if (controller.disposed) return;
+      controller.disposed = true;
+      popup.removeEventListener("resize", controller.resizeHandler);
+      popup.document.removeEventListener?.("fullscreenchange", controller.fullscreenHandler);
+      outputControllers.delete(popup);
+    },
+  };
+  const status = popup.document.createElement?.("div") ?? ({ style: {}, textContent: "" } as unknown as HTMLElement);
+  const button = popup.document.createElement?.("button") ?? ({ style: {}, addEventListener() {} } as unknown as HTMLButtonElement);
+  button.textContent = "全画面表示";
+  button.style.position = "fixed";
+  button.style.zIndex = "10";
+  button.style.left = "8px";
+  button.style.top = "8px";
+  status.style.position = "fixed";
+  status.style.zIndex = "10";
+  status.style.left = "8px";
+  status.style.top = "42px";
+  status.style.color = "white";
+  status.style.background = "rgba(0,0,0,.7)";
+  status.style.padding = "4px";
+  button.addEventListener("click", () => void controller.requestFullscreen());
+  controller.resizeHandler = () => mountOutputCanvas();
+  controller.fullscreenHandler = () => mountOutputCanvas();
+  popup.document.addEventListener?.("fullscreenchange", controller.fullscreenHandler);
+  popup.addEventListener("resize", controller.resizeHandler);
+  popup.document.body.appendChild(status);
+  popup.document.body.appendChild(button);
+  outputControllers.set(popup, controller);
+  controller.refresh();
+  if (!screens) {
+    void getLookingGlassScreens().then((resolved) => {
+      const target = chooseLookingGlassScreen(resolved, calibrationWidth, calibrationHeight, window.devicePixelRatio || 1);
+      if (target && !controller.disposed && !popup.closed) {
+        selected = target;
+        controller.selectedScreen = target;
+        placeOutputWindow(popup, target);
+        void controller.requestFullscreen();
+        controller.refresh();
+      } else if (!controller.disposed && !popup.closed) {
+        status.textContent = "Looking Glass画面を検出できません。出力ウィンドウを手動配置してください。";
+      }
+    });
+  }
+  popup.document.title = "Looking Glass Output";
+  popup.document.body.style.margin = "0";
+  popup.document.body.style.background = "black";
+  config.popup = popup;
+  if (selected) void controller.requestFullscreen();
+  return popup;
 }
 
 function findLayerPrivateState(
@@ -416,6 +679,31 @@ function findLayerPrivateState(
     }
   }
   return null;
+}
+
+function patchLayerWindowMover(layer: object): void {
+  const found = findLayerPrivateState(layer);
+  if (!found || !found.state.moveCanvasToWindow) return;
+  const original = found.state.moveCanvasToWindow;
+  if ((found.state as LayerPrivateState & { __appMover?: boolean }).__appMover) return;
+  (found.state as LayerPrivateState & { __appMover?: boolean }).__appMover = true;
+  found.state.moveCanvasToWindow = (show, onClose) => {
+    const config = LookingGlassConfig as unknown as LookingGlassInternals;
+    const canvas = config.lkgCanvas;
+    const popup = config.popup;
+    if (!show) {
+      if (canvas?.parentElement) canvas.parentElement.removeChild(canvas);
+      if (popup && !popup.closed) popup.close();
+      config.popup = null;
+      return;
+    }
+    if (popup && !popup.closed && canvas) {
+      if (canvas.parentElement !== popup.document.body) popup.document.body.appendChild(canvas);
+      return;
+    }
+    // Do not fall back to the SDK mover here: it may await screen-details
+    // permission and leave an immersive session with no output window.
+  };
 }
 
 /**
@@ -461,6 +749,7 @@ function rebuildLookingGlassLayer(renderer: THREE.WebGLRenderer): void {
   if (!replacementPrivate || !currentPrivate) {
     throw new Error("Looking Glass layer internals are unavailable");
   }
+  patchLayerWindowMover(replacement);
 
   replacementPrivate.state.LookingGlassEnabled = true;
   const currentRecord = currentLayer as unknown as {
@@ -734,6 +1023,7 @@ function patchDeviceBaseLayer(device: LookingGlassDevice): void {
   device.onBaseLayerSet = (sessionId: unknown, layer: unknown): void => {
     if (layersBySession.get(sessionId) === layer) return;
     layersBySession.set(sessionId, layer);
+    patchLayerWindowMover(layer as object);
     originalOnBaseLayerSet(sessionId, layer);
   };
   baseLayerPatched = true;
@@ -796,6 +1086,10 @@ export async function toggleLookingGlass(
   if (!ensureDeviceAnimationFramePatched()) {
     throw new Error("Looking Glass device initialization is incomplete");
   }
+  if (!hasLookingGlassCalibration()) {
+    throw new Error("Looking Glassの校正情報を取得できませんでした。Bridgeと機器接続を確認してください。");
+  }
+  const popup = openLookingGlassOutputWindow();
   cancelAllDeviceAnimationFrames();
   removeTrackedConfigListeners?.();
   contextUnavailable = false;
@@ -803,27 +1097,72 @@ export async function toggleLookingGlass(
   recoveryAttempt = 0;
   lastRecoveryError = null;
   lastDeviceFrameAt = performance.now();
-  const session = await xr.requestSession("immersive-vr", {
-    optionalFeatures: ["local-floor"],
-  });
-  await renderer.xr.setSession(session);
-  // lkgCanvasはXRWebGLLayer生成時に初めて作られるため、セッション設定後に
-  // 内蔵トラックボール操作を停止する。ここを止めないとドラッグのたびに
-  // on-config-changedが発火し、quiltバッファが再確保される。
-  const lkgCanvas = (
-    LookingGlassConfig as unknown as { lkgCanvas?: HTMLCanvasElement | null }
-  ).lkgCanvas;
-  if (lkgCanvas) prepareOutputCanvas(lkgCanvas);
-  mountOutputCanvas();
-  session.addEventListener("end", () => {
-    cancelAllDeviceAnimationFrames();
+  let session: XRSession | null = null;
+  let popupClosing = false;
+  const closePopupOnPageHide = () => {
+    if (popupClosing) return;
+    popupClosing = true;
+    if (session) void session.end().catch(() => undefined);
+  };
+  popup.addEventListener("pagehide", closePopupOnPageHide);
+  const cleanup = async (): Promise<void> => {
+    popup.removeEventListener("pagehide", closePopupOnPageHide);
     removeTrackedConfigListeners?.();
+    cancelAllDeviceAnimationFrames();
+    outputControllers.get(popup)?.dispose();
+    if (session) {
+      try { await session.end(); } catch { /* session may not have started */ }
+    }
+    if (!popup.closed) popup.close();
+    (LookingGlassConfig as unknown as LookingGlassInternals).popup = null;
     contextUnavailable = false;
     recoveryInProgress = false;
     recoveryAttempt = 0;
+    lastRecoveryError = null;
     lastDeviceFrameAt = 0;
     void releaseWakeLocks();
-  });
-  await holdDisplayAwake();
-  return true;
+  };
+  try {
+    session = await xr.requestSession("immersive-vr", {
+      optionalFeatures: ["local-floor"],
+    });
+    session.addEventListener("end", () => {
+      popupClosing = true;
+      popup.removeEventListener("pagehide", closePopupOnPageHide);
+      cancelAllDeviceAnimationFrames();
+      removeTrackedConfigListeners?.();
+      outputControllers.get(popup)?.dispose();
+      contextUnavailable = false;
+      recoveryInProgress = false;
+      recoveryAttempt = 0;
+      lastDeviceFrameAt = 0;
+      lastRecoveryError = null;
+      if (!popup.closed) popup.close();
+      (LookingGlassConfig as unknown as LookingGlassInternals).popup = null;
+      void releaseWakeLocks();
+    }, { once: true });
+    if (popupClosing || popup.closed) throw new Error("Looking Glass出力ウィンドウが閉じられました。");
+    await renderer.xr.setSession(session);
+    if (popupClosing || popup.closed) throw new Error("Looking Glass出力ウィンドウが閉じられました。");
+    // lkgCanvasはXRWebGLLayer生成時に初めて作られるため、セッション設定後に
+    // 内蔵トラックボール操作を停止する。ここを止めないとドラッグのたびに
+    // on-config-changedが発火し、quiltバッファが再確保される。
+    const lkgCanvas = (
+      LookingGlassConfig as unknown as { lkgCanvas?: HTMLCanvasElement | null }
+    ).lkgCanvas;
+    if (lkgCanvas) prepareOutputCanvas(lkgCanvas);
+    mountOutputCanvas();
+    if (!hasLookingGlassCalibration()) {
+      throw new Error("Looking Glassの校正情報を取得できませんでした。Bridgeと機器接続を確認してください。");
+    }
+    const output = (LookingGlassConfig as unknown as LookingGlassInternals).popup;
+    if (!output || output.closed) {
+      throw new Error("Looking Glass出力ウィンドウに接続できませんでした。");
+    }
+    await holdDisplayAwake();
+    return true;
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 }

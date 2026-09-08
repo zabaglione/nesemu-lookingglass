@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test tests/mapper23.test.mjs tests/mappers.test.mjs tests/pixelExtrusion.test.mjs tests/stagePixel.test.mjs"
+    "test": "node --test tests/mapper23.test.mjs tests/mappers.test.mjs tests/pixelExtrusion.test.mjs tests/stagePixel.test.mjs tests/stereoMath.test.mjs tests/lookingglass.test.mjs tests/lookingglassOutput.test.mjs"
   },
   "dependencies": {
     "@lookingglass/webxr": "^0.6.0",

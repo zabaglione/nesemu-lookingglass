@@ -10,6 +10,8 @@ import {
   initLookingGlass,
   installLookingGlassRecovery,
   pinLookingGlassView,
+  getLookingGlassDisplaySnapshot,
+  setLookingGlassSceneBounds,
   toggleLookingGlass,
 } from "./scene/lookingglass";
 import { Stage } from "./scene/stage";
@@ -31,6 +33,7 @@ camera.position.set(0, 0, 1.7);
 const audio = new NesAudio();
 const core = new NesCore(audio.pushSample, NES_SAMPLE_RATE);
 const stage = new Stage(core.updateLayers());
+setLookingGlassSceneBounds(stage.screenWidth, stage.screenHeight);
 stage.scene.background = new THREE.Color(0x05060a);
 // キャンバスはXRセッション中にLooking Glass側ウィンドウへ移動するため、
 // マウス操作はメインウィンドウに残る#appで受ける
@@ -51,6 +54,9 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onDemoRom: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
   onEnterLookingGlass: () => void handleLookingGlass(),
   onLayerGap: (v) => stage.setLayerGap(v),
+  onDepthScale: (v) => {
+    stage.setDepthScale(v);
+  },
   onSpriteGroupMargin: (v) => {
     spriteGroupingSettings.margin = v;
     core.setSpriteGrouping(v, spriteGroupingSettings.limit);
@@ -66,6 +72,7 @@ const panel = new Panel(document.getElementById("panel-root")!, {
   onPixelSpriteThickness: (v) => stage.setPixelSpriteThickness(v),
   onAspectMode: (mode) => {
     stage.setAspectMode(mode);
+    setLookingGlassSceneBounds(stage.screenWidth, stage.screenHeight);
     fitCamera();
   },
   onVolume: (v) => audio.setVolume(v),
@@ -89,6 +96,7 @@ installLookingGlassRecovery(renderer, (status, detail) => {
   }
 });
 stage.setLayerGap(panel.initialGap);
+stage.setDepthScale(panel.depthScale);
 core.setSpriteGrouping(panel.spriteGroupMargin, panel.spriteGroupLimit);
 stage.setSpriteDepthSpread(panel.spriteDepthSpread);
 
@@ -162,6 +170,10 @@ async function handleLookingGlass(): Promise<void> {
 
 renderer.xr.addEventListener("sessionend", () => {
   panel.setLkgActive(false);
+  camera.fov = 35;
+  camera.position.set(0, 0, camera.position.z);
+  camera.rotation.set(0, 0, 0);
+  camera.updateProjectionMatrix();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   fitCamera();
 });
@@ -251,6 +263,7 @@ let fpsWindowStart = last;
 let fpsFrames = 0;
 
 let animationFaulted = false;
+let lastLkgDiagnosticsAt = 0;
 
 function renderFrame(): void {
   const now = performance.now();
@@ -283,6 +296,15 @@ function renderFrame(): void {
 
   // XRセッション中はポリフィルが各ビューのカメラを差し替える。
   // ホログラムカメラ設定はポリフィル内蔵コントロールに動かされないよう固定
+  if (now - lastLkgDiagnosticsAt >= 1000) {
+    const snapshot = getLookingGlassDisplaySnapshot(renderer, camera);
+    panel.setLkgDiagnostics(
+      snapshot.calibrated
+          ? `校正済み ${snapshot.screenWidth}x${snapshot.screenHeight} / 出力: ${snapshot.popupOpen ? "接続" : "未接続"} / 実view: ${snapshot.actualViewCount} / 視差: 前 ${snapshot.frontDisparity.toFixed(4)}, 後 ${snapshot.backDisparity.toFixed(4)} / ${snapshot.fullscreen ? "枠なし全画面" : "非全画面"} ${snapshot.pixelWidth}x${snapshot.pixelHeight} / 配置: ${snapshot.targetMatched === true ? "一致" : snapshot.targetMatched === false ? "不一致" : "未確認"}`
+        : "校正情報: 未取得（Bridge接続待ち）",
+    );
+    lastLkgDiagnosticsAt = now;
+  }
   if (renderer.xr.isPresenting) {
     pinLookingGlassView();
   }
