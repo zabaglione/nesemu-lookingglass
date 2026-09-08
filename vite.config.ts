@@ -9,12 +9,6 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes("node_modules/onnxruntime-web")) {
-            return "onnxruntime";
-          }
-          if (id.includes("node_modules/@huggingface/transformers")) {
-            return "transformers";
-          }
           if (id.includes("node_modules/@lookingglass")) {
             return "lookingglass";
           }

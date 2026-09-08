@@ -1,19 +1,17 @@
 // 日本語UIパネル。DOMを組み立ててコールバックを配線する。
 
-import type { AspectMode, DisplayMode } from "../scene/stage";
+import type { AspectMode } from "../scene/stage";
 
 export interface PanelCallbacks {
   onRomFile(file: File): void;
   onDemoRom(): void;
   onEnterLookingGlass(): void;
-  onDisplayMode(mode: DisplayMode): void;
+  onPixelBackgroundThickness(value: number): void;
+  onPixelSpriteThickness(value: number): void;
   onLayerGap(value: number): void;
   onSpriteGroupMargin(value: number): void;
   onSpriteGroupLimit(value: number): void;
   onSpriteDepthSpread(value: number): void;
-  onDepthScale(value: number): void;
-  onDepthInferSize(px: number): void;
-  onDepthSmoothing(value: number): void;
   onAspectMode(mode: AspectMode): void;
   onVolume(value: number): void;
   onTogglePause(): void;
@@ -22,8 +20,6 @@ export interface PanelCallbacks {
 }
 
 export class Panel {
-  private static readonly DEFAULT_DEPTH_SCALE = 0.08;
-
   private readonly rootEl: HTMLElement;
   private romNameEl!: HTMLElement;
   private mapperEl!: HTMLElement;
@@ -33,7 +29,6 @@ export class Panel {
   private romMessageEl!: HTMLElement;
   private messageEl!: HTMLElement;
   private lkgBtn!: HTMLButtonElement;
-  private dispModeSel!: HTMLSelectElement;
   private spriteGroupsEl!: HTMLElement;
   private lastSpriteGroupCount: number | null = null;
 
@@ -66,11 +61,7 @@ export class Panel {
           <h3>表示</h3>
           <div class="slider-row">
             <label for="dispmode">立体化</label>
-            <select id="dispmode">
-              <option value="layers" selected>レイヤー分離</option>
-              <option value="background-depth">背景のみAI深度＋スプライト分離(実験的)</option>
-              <option value="depth">レイヤー別AI深度(実験的)</option>
-            </select>
+            <span>ピクセル立体化</span>
           </div>
           <div data-id="layer-rows">
             <div class="slider-row" data-id="layer-gap-row">
@@ -99,31 +90,17 @@ export class Panel {
             </div>
             <div class="status-line">検出グループ: <b data-id="sprite-groups">-</b></div>
           </div>
-          <div data-id="depth-rows" hidden>
+          <div data-id="pixel-rows">
+            <div class="status-line" style="white-space: normal">Portal NES方式のピクセル境界立体化。厚みは層間隔を超えないよう自動制限されます。</div>
             <div class="slider-row">
-              <label for="depth-gap">層間距離</label>
-              <input id="depth-gap" type="range" min="0" max="0.3" step="0.005" value="0.1" />
-              <output data-id="depth-gap-out">0.10</output>
+              <label for="pixel-bg-thickness">背景厚み</label>
+              <input id="pixel-bg-thickness" type="range" min="0" max="0.3" step="0.005" value="0.06" />
+              <output data-id="pixel-bg-thickness-out">0.06</output>
             </div>
             <div class="slider-row">
-              <label for="dscale">深度強さ</label>
-              <input id="dscale" type="range" min="0" max="1" step="0.02" value="0.08" />
-              <output data-id="dscale-out">0.08</output>
-            </div>
-            <div class="slider-row">
-              <label for="dres">解像度</label>
-              <select id="dres">
-                <option value="154">154px(高速)</option>
-                <option value="196">196px</option>
-                <option value="252" selected>252px(標準)</option>
-                <option value="322">322px</option>
-                <option value="392">392px(精細)</option>
-              </select>
-            </div>
-            <div class="slider-row">
-              <label for="dsmooth">平滑化係数</label>
-              <input id="dsmooth" type="range" min="0.05" max="1" step="0.05" value="1" />
-              <output data-id="dsmooth-out">1.00</output>
+              <label for="pixel-sprite-thickness">スプライト厚み</label>
+              <input id="pixel-sprite-thickness" type="range" min="0" max="0.3" step="0.005" value="0.035" />
+              <output data-id="pixel-sprite-thickness-out">0.035</output>
             </div>
           </div>
           <div class="slider-row">
@@ -236,36 +213,17 @@ export class Panel {
       cb.onAspectMode(aspect.value as AspectMode);
     });
 
-    this.dispModeSel = q<HTMLSelectElement>("#dispmode");
-    this.dispModeSel.addEventListener("change", () => {
-      this.applyDisplayModeRows();
-      cb.onDisplayMode(this.dispModeSel.value as DisplayMode);
+    const pixelBg = q<HTMLInputElement>("#pixel-bg-thickness");
+    const pixelBgOut = q('[data-id="pixel-bg-thickness-out"]');
+    pixelBg.addEventListener("input", () => {
+      pixelBgOut.textContent = Number(pixelBg.value).toFixed(2);
+      cb.onPixelBackgroundThickness(Number(pixelBg.value));
     });
-
-    const dscale = q<HTMLInputElement>("#dscale");
-    const dscaleOut = q('[data-id="dscale-out"]');
-    dscale.addEventListener("input", () => {
-      dscaleOut.textContent = Number(dscale.value).toFixed(2);
-      cb.onDepthScale(Number(dscale.value));
-    });
-
-    const depthGap = q<HTMLInputElement>("#depth-gap");
-    const depthGapOut = q('[data-id="depth-gap-out"]');
-    depthGap.addEventListener("input", () => {
-      depthGapOut.textContent = Number(depthGap.value).toFixed(2);
-      cb.onLayerGap(Number(depthGap.value));
-    });
-
-    const dres = q<HTMLSelectElement>("#dres");
-    dres.addEventListener("change", () => {
-      cb.onDepthInferSize(Number(dres.value));
-    });
-
-    const dsmooth = q<HTMLInputElement>("#dsmooth");
-    const dsmoothOut = q('[data-id="dsmooth-out"]');
-    dsmooth.addEventListener("input", () => {
-      dsmoothOut.textContent = Number(dsmooth.value).toFixed(2);
-      cb.onDepthSmoothing(Number(dsmooth.value));
+    const pixelSprite = q<HTMLInputElement>("#pixel-sprite-thickness");
+    const pixelSpriteOut = q('[data-id="pixel-sprite-thickness-out"]');
+    pixelSprite.addEventListener("input", () => {
+      pixelSpriteOut.textContent = Number(pixelSprite.value).toFixed(3);
+      cb.onPixelSpriteThickness(Number(pixelSprite.value));
     });
 
     const vol = q<HTMLInputElement>("#vol");
@@ -284,7 +242,6 @@ export class Panel {
     q(".panel-header").addEventListener("dblclick", () =>
       (toggle as HTMLButtonElement).click(),
     );
-    this.applyDisplayModeRows();
   }
 
   get initialGap(): number {
@@ -297,11 +254,6 @@ export class Panel {
     );
   }
 
-  get depthGap(): number {
-    return Number(
-      this.rootEl.querySelector<HTMLInputElement>("#depth-gap")!.value,
-    );
-  }
 
   get spriteGroupMargin(): number {
     return Number(
@@ -321,30 +273,6 @@ export class Panel {
     );
   }
 
-  get initialDepthScale(): number {
-    return Panel.DEFAULT_DEPTH_SCALE;
-  }
-
-  /** モードに応じてスライダー行の表示を切り替える */
-  private applyDisplayModeRows(): void {
-    const mode = this.dispModeSel.value as DisplayMode;
-    const usesDepth = mode !== "layers";
-    this.rootEl
-      .querySelector('[data-id="layer-rows"]')!
-      .toggleAttribute("hidden", mode === "depth");
-    this.rootEl
-      .querySelector('[data-id="layer-gap-row"]')!
-      .toggleAttribute("hidden", mode !== "layers");
-    this.rootEl
-      .querySelector('[data-id="depth-rows"]')!
-      .toggleAttribute("hidden", !usesDepth);
-  }
-
-  /** 表示モードをUIに反映する(モデル読み込み失敗時の巻き戻し用) */
-  setDisplayMode(mode: DisplayMode): void {
-    this.dispModeSel.value = mode;
-    this.applyDisplayModeRows();
-  }
 
   setRomInfo(name: string, mapper: number | null): void {
     this.romNameEl.textContent = name;
@@ -387,40 +315,6 @@ export class Panel {
     this.lkgBtn.textContent = active
       ? "Looking Glass表示を終了"
       : "Looking Glassで表示";
-  }
-
-  /**
-   * メッセージ欄にOK/キャンセル付きの確認を表示する。
-   * ボタンが押されると解決し、メッセージは消える。
-   */
-  showConfirm(
-    message: string,
-    okLabel: string,
-    cancelLabel: string,
-  ): Promise<boolean> {
-    return new Promise((resolve) => {
-      this.messageEl.className = "message info";
-      this.messageEl.textContent = "";
-      const text = document.createElement("div");
-      text.textContent = message;
-      const row = document.createElement("div");
-      row.className = "btn-row";
-      row.style.marginTop = "8px";
-      const ok = document.createElement("button");
-      ok.className = "btn primary";
-      ok.textContent = okLabel;
-      const cancel = document.createElement("button");
-      cancel.className = "btn";
-      cancel.textContent = cancelLabel;
-      const done = (v: boolean) => {
-        this.clearMessage();
-        resolve(v);
-      };
-      ok.addEventListener("click", () => done(true));
-      cancel.addEventListener("click", () => done(false));
-      row.append(ok, cancel);
-      this.messageEl.append(text, row);
-    });
   }
 
   showError(msg: string): void {

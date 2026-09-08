@@ -7,10 +7,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test tests/mapper23.test.mjs tests/mappers.test.mjs"
+    "test": "node --test tests/mapper23.test.mjs tests/mappers.test.mjs tests/pixelExtrusion.test.mjs tests/stagePixel.test.mjs"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0",
     "@lookingglass/webxr": "^0.6.0",
     "three": "^0.166.1"
   },

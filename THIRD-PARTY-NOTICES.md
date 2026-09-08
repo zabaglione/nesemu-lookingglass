@@ -29,20 +29,11 @@
 - 依存パッケージ `@lookingglass/webxr-polyfill`(Apache-2.0ベースの
   WebXR Polyfillフォーク)を含みます。
 
-## @huggingface/transformers (Transformers.js)
-
-- Source: https://github.com/huggingface/transformers.js
-- Copyright Hugging Face
-- License: Apache License 2.0
-- AI深度モードの推論ランタイムとして使用(onnxruntime-webを含む)。
-
-## Depth Anything V2 (small) — 学習済みモデル
-
-- Source: https://huggingface.co/onnx-community/depth-anything-v2-small
-  (original: https://github.com/DepthAnything/Depth-Anything-V2)
-- License: Apache License 2.0(smallモデル)
-- AI深度モード選択時にHugging Face Hubから実行時ダウンロードされます
-  (リポジトリには含まれません)。
-
 各ライセンスの全文は `node_modules` 内の各パッケージ、または上記の
 ソースリポジトリを参照してください。
+
+## Portal NES (algorithm reference only)
+
+- Source: https://github.com/vjroba/portal_nes
+- 本プロジェクトはコードをコピーせず、ピクセル境界の立体化という考え方のみを
+  参考にした独立実装です。Portal NESの完全移植、設定、プロファイル互換ではありません。

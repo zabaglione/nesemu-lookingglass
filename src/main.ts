@@ -12,7 +12,7 @@ import {
   pinLookingGlassView,
   toggleLookingGlass,
 } from "./scene/lookingglass";
-import { Stage, type DisplayMode } from "./scene/stage";
+import { Stage } from "./scene/stage";
 import { Panel } from "./ui/panel";
 
 const FRAME_MS = 1000 / 60.0988; // NTSC NESのフレームレート
@@ -30,7 +30,7 @@ camera.position.set(0, 0, 1.7);
 
 const audio = new NesAudio();
 const core = new NesCore(audio.pushSample, NES_SAMPLE_RATE);
-const stage = new Stage(core.updateLayers(), core.updateComposite().tex);
+const stage = new Stage(core.updateLayers());
 stage.scene.background = new THREE.Color(0x05060a);
 // キャンバスはXRセッション中にLooking Glass側ウィンドウへ移動するため、
 // マウス操作はメインウィンドウに残る#appで受ける
@@ -42,113 +42,14 @@ const input = new InputManager(core.nes);
 
 let paused = false;
 
-// AI深度モード(モジュールとモデルは初回切り替え時に動的読み込み)
-let depthEstimator: InstanceType<
-  typeof import("./depth/estimator").DepthEstimator
-> | null = null;
-let depthLoading = false;
-const depthLayerNames = ["behind", "bg", "front"] as const;
-const backgroundDepthLayerNames = ["bg"] as const;
-const lastDepthVersions = { behind: 0, bg: 0, front: 0 };
-let requestedDisplayMode: DisplayMode = "layers";
 let frameRefreshRequested = true;
-// パネルの調整値(モデル読み込み前の変更も、読み込み後に反映する)
-const depthSettings = { inferSize: 252, smoothing: 1 };
+// パネルの調整値
 const spriteGroupingSettings = { margin: 4, limit: 8 };
-
-/**
- * 深度モデルがブラウザキャッシュ(transformers.jsのCache API)に
- * 保存済みかどうか。保存済みならダウンロード確認は不要。
- */
-async function isDepthModelCached(): Promise<boolean> {
-  try {
-    if (!("caches" in window)) return false;
-    const cache = await caches.open("transformers-cache");
-    const keys = await cache.keys();
-    return keys.some(
-      (req) =>
-        req.url.includes("depth-anything-v2-small") &&
-        req.url.includes(".onnx"),
-    );
-  } catch {
-    return false;
-  }
-}
-
-async function enableDepthMode(
-  mode: Exclude<DisplayMode, "layers">,
-): Promise<void> {
-  if (depthEstimator || depthLoading) {
-    stage.setDisplayMode(mode);
-    return;
-  }
-
-  // 未キャッシュならダウンロード前にユーザーへ確認する
-  if (!(await isDepthModelCached())) {
-    const ok = await panel.showConfirm(
-      "AI深度には深度推定モデル「Depth Anything V2 small」(約50MB)のダウンロードが必要です。初回のみで、以後はブラウザ内にキャッシュされます。推論はブラウザ内で完結し、ゲーム画面が外部に送信されることはありません。",
-      "ダウンロードして開始",
-      "キャンセル",
-    );
-    if (!ok) {
-      requestedDisplayMode = "layers";
-      stage.setLayerGap(panel.layerGap);
-      stage.setDisplayMode("layers");
-      panel.setDisplayMode("layers");
-      return;
-    }
-  }
-
-  stage.setDisplayMode(mode);
-  depthLoading = true;
-  panel.showInfo("AI深度モデルを準備中…");
-  try {
-    const { DepthEstimator } = await import("./depth/estimator");
-    const est = new DepthEstimator();
-    await est.init((msg) => panel.showInfo(msg));
-    est.setInferSize(depthSettings.inferSize);
-    est.smoothing = depthSettings.smoothing;
-    depthEstimator = est;
-    frameRefreshRequested = true;
-    if (requestedDisplayMode !== "layers") {
-      stage.setDisplayMode(requestedDisplayMode);
-    }
-    if (est.usingWebGPU) {
-      panel.showInfo("AI深度: WebGPUで実行中です。");
-    } else {
-      panel.showInfo(
-        "AI深度: このブラウザはWebGPU非対応のためCPUで実行します(低速)。",
-      );
-    }
-  } catch (e) {
-    panel.showError(
-      `深度モデルを読み込めませんでした: ${(e as Error).message}`,
-    );
-    requestedDisplayMode = "layers";
-    stage.setLayerGap(panel.layerGap);
-    stage.setDisplayMode("layers");
-    panel.setDisplayMode("layers");
-  } finally {
-    depthLoading = false;
-  }
-}
 
 const panel = new Panel(document.getElementById("panel-root")!, {
   onRomFile: (file) => void loadRomFile(file),
   onDemoRom: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
   onEnterLookingGlass: () => void handleLookingGlass(),
-  onDisplayMode: (mode) => {
-    requestedDisplayMode = mode;
-    frameRefreshRequested = true;
-    if (mode !== "layers") {
-      stage.setLayerGap(panel.depthGap);
-      void enableDepthMode(mode);
-    } else {
-      stage.setLayerGap(panel.layerGap);
-      stage.setDisplayMode("layers");
-      panel.clearMessage();
-    }
-  },
   onLayerGap: (v) => stage.setLayerGap(v),
   onSpriteGroupMargin: (v) => {
     spriteGroupingSettings.margin = v;
@@ -161,19 +62,8 @@ const panel = new Panel(document.getElementById("panel-root")!, {
     frameRefreshRequested = true;
   },
   onSpriteDepthSpread: (v) => stage.setSpriteDepthSpread(v),
-  onDepthScale: (v) => stage.setDepthScale(v),
-  onDepthInferSize: (px) => {
-    depthSettings.inferSize = px;
-    depthEstimator?.setInferSize(px);
-    frameRefreshRequested = true;
-  },
-  onDepthSmoothing: (v) => {
-    depthSettings.smoothing = v;
-    if (depthEstimator) {
-      depthEstimator.smoothing = v;
-    }
-    frameRefreshRequested = true;
-  },
+  onPixelBackgroundThickness: (v) => stage.setPixelBackgroundThickness(v),
+  onPixelSpriteThickness: (v) => stage.setPixelSpriteThickness(v),
   onAspectMode: (mode) => {
     stage.setAspectMode(mode);
     fitCamera();
@@ -201,7 +91,6 @@ installLookingGlassRecovery(renderer, (status, detail) => {
 stage.setLayerGap(panel.initialGap);
 core.setSpriteGrouping(panel.spriteGroupMargin, panel.spriteGroupLimit);
 stage.setSpriteDepthSpread(panel.spriteDepthSpread);
-stage.setDepthScale(panel.initialDepthScale);
 
 function commitLayerFrames(): void {
   const frames = core.updateLayers();
@@ -220,32 +109,6 @@ function updateSpriteGroupCount(
         )
       : null,
   );
-}
-
-function commitDepthFrame(): void {
-  const backgroundOnly = stage.displayMode === "background-depth";
-  const frames = core.updateLayers(backgroundOnly);
-  stage.commitFrame(frames);
-  depthEstimator?.submit(
-    frames,
-    backgroundOnly ? backgroundDepthLayerNames : depthLayerNames,
-  );
-  if (backgroundOnly) updateSpriteGroupCount(frames);
-}
-
-function updateDepthResults(): void {
-  if (!depthEstimator) return;
-  const names =
-    stage.displayMode === "background-depth"
-      ? backgroundDepthLayerNames
-      : depthLayerNames;
-  for (const name of names) {
-    const layer = depthEstimator.layers[name];
-    if (layer.version !== lastDepthVersions[name]) {
-      lastDepthVersions[name] = layer.version;
-      stage.updateDepth(name, layer.depth);
-    }
-  }
 }
 
 async function loadRomBytes(bytes: Uint8Array, name: string): Promise<void> {
@@ -368,9 +231,6 @@ if (import.meta.env.DEV) {
       return getLookingGlassRecoverySnapshot();
     },
     simulateContextLoss,
-    get depthEstimator() {
-      return depthEstimator;
-    },
     loadDemo: () => void loadRomBytes(buildTestRom(), "内蔵デモROM"),
     // rAFが止まる環境(非表示タブ等)でも手動でフレームを進められるように
     step: (n = 1) => {
@@ -378,12 +238,7 @@ if (import.meta.env.DEV) {
         input.poll();
         core.frame();
       }
-      if (stage.displayMode !== "layers") {
-        commitDepthFrame();
-        updateDepthResults();
-      } else {
-        commitLayerFrames();
-      }
+      commitLayerFrames();
       renderer.render(stage.scene, camera);
     },
   };
@@ -420,13 +275,7 @@ function renderFrame(): void {
   // XR描画自体は継続し、静止したquiltを出力し続ける。
   const refreshGameTextures =
     frameRefreshRequested || !core.romLoaded || !paused;
-  if (stage.displayMode !== "layers") {
-    if (refreshGameTextures) {
-      commitDepthFrame();
-      frameRefreshRequested = false;
-    }
-    updateDepthResults();
-  } else if (refreshGameTextures) {
+  if (refreshGameTextures) {
     commitLayerFrames();
     frameRefreshRequested = false;
   }
